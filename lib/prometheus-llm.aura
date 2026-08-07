@@ -34,12 +34,16 @@
         prom:propose
         prom:parse-proposal-text
         prom:proposal-prompt
+        prom:proposal-system-live
+        prom:strip-think
+        prom:llm-chat-live
         prom:execute-proposal
         prom:note-edge-escape!)
 
 (require "prometheus-measure" all:)
 (require "prometheus-mutate" all:)
 (require "std/string" all:)
+(require "std/llm" all:)
 
 (define prom:llm-version 1)
 
@@ -141,45 +145,196 @@
 
 ; ── Wire parse ───────────────────────────────────────────────
 
+(define (prom:proposal-system-live)
+  (string-append
+    "You are a denseness propose-edge agent. "
+    "Output EXACTLY one line and nothing else. No markdown fences. No explanation. "
+    "Do not emit <think> blocks. "
+    "Wire formats only: "
+    "MUTATE|subject|(lambda (x) (* x N))|short-summary "
+    "OR SKIP|subject||short-summary. "
+    "N must be one of 2,3,5,7. "
+    "Field 2 MUST be the literal token subject (not a number). "
+    "Body may only use x and numeric literals."))
+
 (define (prom:proposal-prompt sample-arg current-got)
   (string-append
-    "Return ONLY one line: "
-    "MUTATE|subject|(lambda (x) (* x N))|summary OR SKIP|subject||summary. "
-    "N in {2,3,5,7}. sample-arg="
+    "Observation: sample-arg="
     (if (number? sample-arg) (number->string sample-arg) "7")
     " current-got="
     (if (number? current-got) (number->string current-got) "?")
-    ". Prefer triple when current is double. No markdown."))
+    ". Policy: if current-got equals double (sample-arg*2), emit triple MUTATE; "
+    "if already triple or higher scale, SKIP is preferred. "
+    "Reply with EXACTLY one wire line."))
+
+; Strip MiniMax-style <think>...</think> (and bare think wrappers) from model text.
+(define (prom:strip-think text)
+  (if (not (string? text))
+    ""
+    (let ((s text))
+      ; crude but effective: drop from <think> through </think>
+      (let ((a (string-contains? s "<think>")))
+        (if a
+          (let ((b (string-contains? s "</think>")))
+            (if b
+              ; string-replace all occurrences iteratively once
+              (prom:strip-think
+                (string-append
+                  (let ((i (string-index-of s "<think>")))
+                    (if (and (number? i) (>= i 0))
+                      (substring s 0 i)
+                      ""))
+                  (let ((j (string-index-of s "</think>")))
+                    (if (and (number? j) (>= j 0))
+                      (substring s (+ j 8) (string-length s))
+                      ""))))
+              s))
+          s)))))
+
+; Prefer host string-index-of; fallback scan if missing.
+(define (string-index-of s needle)
+  (if (or (not (string? s)) (not (string? needle)) (= (string-length needle) 0))
+    -1
+    (let ((n (string-length s))
+          (m (string-length needle))
+          (i 0)
+          (found -1))
+      (while (lambda () (and (< i n) (< found 0) (<= (+ i m) n)))
+        (lambda ()
+          (if (equal? (substring s i (+ i m)) needle)
+            (set! found i)
+            (set! i (+ i 1)))))
+      found)))
 
 (define (prom:parse-proposal-text text source)
   (if (not (string? text))
     #f
-    (let ((len (string-length text)))
-      (let ((tail (if (<= len 240) text (substring text (- len 240) len))))
-        (let ((parts (string-split tail "\n")))
-          (let loop ((xs parts))
-            (cond
-              ((null? xs) #f)
-              ((equal? (car xs) "") (loop (cdr xs)))
-              ((> (string-length (car xs)) 200) (loop (cdr xs)))
-              ((or (string-prefix? (car xs) "MUTATE|")
-                   (string-prefix? (car xs) "mutate|")
-                   (string-prefix? (car xs) "SKIP|")
-                   (string-prefix? (car xs) "skip|"))
-               (let ((bits (string-split (car xs) "|")))
+    (let ((clean (prom:strip-think text)))
+      (let ((parts (string-split clean "\n")))
+        (let loop ((xs parts))
+          (cond
+            ((null? xs) #f)
+            ((equal? (car xs) "") (loop (cdr xs)))
+            ((> (string-length (car xs)) 200) (loop (cdr xs)))
+            ((or (string-prefix? (car xs) "MUTATE|")
+                 (string-prefix? (car xs) "mutate|")
+                 (string-prefix? (car xs) "SKIP|")
+                 (string-prefix? (car xs) "skip|"))
+             (let ((bits (string-split (car xs) "|")))
+               (if (< (length bits) 4)
+                 #f
+                 (let ((k0 (list-ref bits 0)))
+                   (list (if (or (equal? k0 "MUTATE") (equal? k0 "mutate"))
+                           "mutate"
+                           (if (or (equal? k0 "SKIP") (equal? k0 "skip"))
+                             "skip"
+                             k0))
+                         (list-ref bits 1)
+                         (list-ref bits 2)
+                         (list-ref bits 3)
+                         (if (string? source) source "wire"))))))
+            ; also accept a line that merely contains the wire prefix mid-line
+            ((or (string-contains? (car xs) "MUTATE|subject|")
+                 (string-contains? (car xs) "SKIP|subject|"))
+             (let* ((line (car xs))
+                    (idx (if (string-contains? line "MUTATE|subject|")
+                           (string-index-of line "MUTATE|subject|")
+                           (string-index-of line "SKIP|subject|")))
+                    (sub (if (and (number? idx) (>= idx 0))
+                           (substring line idx (string-length line))
+                           line)))
+               (let ((bits (string-split sub "|")))
                  (if (< (length bits) 4)
-                   #f
-                   (let ((k0 (list-ref bits 0)))
-                     (list (if (or (equal? k0 "MUTATE") (equal? k0 "mutate"))
-                             "mutate"
-                             (if (or (equal? k0 "SKIP") (equal? k0 "skip"))
-                               "skip"
-                               k0))
-                           (list-ref bits 1)
-                           (list-ref bits 2)
-                           (list-ref bits 3)
-                           (if (string? source) source "wire"))))))
-              (else (loop (cdr xs))))))))))
+                   (loop (cdr xs))
+                   (list (if (string-prefix? (list-ref bits 0) "MUTATE") "mutate" "skip")
+                         (list-ref bits 1)
+                         (list-ref bits 2)
+                         (list-ref bits 3)
+                         (if (string? source) source "wire"))))))
+            (else (loop (cdr xs)))))))))
+
+; Live chat with max_tokens headroom for reasoning models (MiniMax-M3 / DS-v4).
+; Returns hash: ok content error raw_len elapsed_ms model
+; std/llm is required at module top (aura-llm-call / json-encode / llm:parse-response).
+(define (prom:llm-chat-live system-prompt user-prompt)
+  (let* ((model-env (getenv "LLM_MODEL"))
+         (model (if (and (string? model-env) (> (string-length model-env) 0))
+                  model-env
+                  "deepseek-chat"))
+         (sys (if (string? system-prompt) system-prompt (prom:proposal-system-live)))
+         (usr (if (string? user-prompt) user-prompt ""))
+         (body (try
+                 (json-encode
+                   (hash "model" model
+                         "max_tokens" 512
+                         "temperature" 0
+                         "messages"
+                         (list (hash "role" "system" "content" sys)
+                               (hash "role" "user" "content" usr))))
+                 (catch (e) #f)))
+         (t0 (monotonic-ms))
+         (raw (if (string? body)
+                (try (aura-llm-call body) (catch (e) "call-error"))
+                "json-encode-failed"))
+         (t1 (monotonic-ms))
+         (elapsed (if (and (number? t0) (number? t1) (>= (- t1 t0) 0))
+                    (- t1 t0)
+                    0)))
+    (cond
+      ((or (not (string? raw)) (= (string-length raw) 0)
+           (equal? raw "rate-limited") (equal? raw "injection-blocked")
+           (equal? raw "bad-arg") (equal? raw "call-error")
+           (equal? raw "json-encode-failed"))
+       (hash "ok" #f
+             "error" (if (and (string? raw) (> (string-length raw) 0)) raw "empty")
+             "content" ""
+             "raw_len" 0
+             "elapsed_ms" elapsed
+             "model" model))
+      (else
+       (let* ((parsed (try (llm:parse-response raw) (catch (e) #f)))
+              (content
+                (if (and (hash? parsed) (hash-ref parsed "ok" #f))
+                  (let ((c (hash-ref parsed "content" "")))
+                    (if (string? c) c ""))
+                  ""))
+              (msg-hash
+                (let ((data (try (json-parse raw) (catch (e) #f))))
+                  (if (hash? data)
+                    (let ((choices (hash-ref data "choices" (list))))
+                      (if (and (pair? choices) (hash? (car choices)))
+                        (hash-ref (car choices) "message" #f)
+                        #f))
+                    #f)))
+              (reasoning
+                (if (hash? msg-hash)
+                  (let ((rc (hash-ref msg-hash "reasoning_content" "")))
+                    (if (string? rc) rc ""))
+                  ""))
+              ; Prefer non-empty content; else reasoning_content (DS-v4 / M3 style).
+              (content2
+                (if (and (string? content) (> (string-length content) 0))
+                  content
+                  reasoning))
+              ; Strip think wrappers before wire scan.
+              (content3 (prom:strip-think content2))
+              ; If still no MUTATE/SKIP line, try raw text as last resort.
+              (content4
+                (if (or (string-contains? content3 "MUTATE|")
+                        (string-contains? content3 "SKIP|"))
+                  content3
+                  (if (or (string-contains? raw "MUTATE|")
+                          (string-contains? raw "SKIP|"))
+                    raw
+                    content3))))
+         (hash "ok" (and (string? content4) (> (string-length content4) 0))
+               "error" (if (and (string? content4) (> (string-length content4) 0))
+                         ""
+                         "no-content")
+               "content" (if (string? content4) content4 "")
+               "raw_len" (string-length raw)
+               "elapsed_ms" elapsed
+               "model" model))))))
 
 ; ── Propose ──────────────────────────────────────────────────
 
@@ -216,6 +371,7 @@
 
 ; Live path: opt-in only. Without key or on failure, fall back to rule body
 ; but still mark edge escape (attempted live edge).
+; On success returns proposal with source llm-live and summary may include model tag.
 (define (prom:propose-live mode current-got sample-arg)
   (prom:note-edge-escape!)
   (let ((fallback (prom:propose-rule mode current-got sample-arg))
@@ -224,27 +380,29 @@
             (= (string-length key) 0))
       (list (car fallback) (car (cdr fallback)) (car (cdr (cdr fallback)))
             "llm-nokey" "llm-live")
-      (begin
-        (require "std/llm" all:)
-        (let ((sys
-                "Reply with EXACTLY one line: MUTATE|subject|(lambda (x) (* x N))|summary OR SKIP|subject||summary. N in {2,3,5,7}. No markdown.")
-              (usr (prom:proposal-prompt sample-arg current-got)))
-          (let ((resp (try (llm:chat sys usr) (catch (e) #f))))
-            (let ((text
-                    (if (string? resp)
-                      resp
-                      (if (hash? resp)
-                        (if (hash-ref resp "ok" #f)
-                          (let ((c (hash-ref resp "content" "")))
-                            (if (string? c) c ""))
-                          "")
-                        ""))))
-              (let ((parsed (prom:parse-proposal-text text "llm-live")))
-                (if (and (pair? parsed) (prom:proposal-valid? parsed))
-                  parsed
-                  (list (car fallback) (car (cdr fallback))
-                        (car (cdr (cdr fallback)))
-                        "llm-parse-fallback" "llm-live"))))))))))
+      (let* ((resp (try
+                     (prom:llm-chat-live
+                       (prom:proposal-system-live)
+                       (prom:proposal-prompt sample-arg current-got))
+                     (catch (e) #f)))
+             (text (if (hash? resp) (hash-ref resp "content" "") ""))
+             (parsed (prom:parse-proposal-text text "llm-live")))
+        (if (and (pair? parsed) (prom:proposal-valid? parsed))
+          parsed
+          ; Distinguish true live parse from rule fallback after failed wire.
+          (list (car fallback) (car (cdr fallback))
+                (car (cdr (cdr fallback)))
+                (string-append
+                  "llm-parse-fallback"
+                  (if (hash? resp)
+                    (string-append
+                      ":err="
+                      (let ((e (hash-ref resp "error" "")))
+                        (if (string? e) e "?"))
+                      ":ms="
+                      (number->string (hash-ref resp "elapsed_ms" 0)))
+                    ""))
+                "llm-live-fallback"))))))
 
 (define (prom:propose mode current-got sample-arg)
   (let ((pm (prom:propose-mode)))
@@ -280,32 +438,41 @@
               (cons ":got" (prom:sample-subject sample-arg))
               (cons ":want" -1)
               (cons ":source" src))
-        (let* ((body (prom:proposal-body proposal))
-               (want (prom:want-for-body body sample-arg))
-               (summary (prom:proposal-summary proposal))
-               (r (prom:rebind-live "subject" body summary sample-arg))
-               (got (prom:alist-ref ":got" r -1))
-               (leaves (prom:leaves-intact? n-leaves))
-               (applied (eq? (prom:alist-ref ":ok" r #f) #t))
-               (good (and applied (= got want) leaves)))
-          (if good
-            (begin
-              (prom:stats-bump! "correctness_ok")
-              (list (cons ":ok" #t)
-                    (cons ":decision" 'commit)
-                    (cons ":reason" "verified")
-                    (cons ":snap" -1)
-                    (cons ":got" got)
-                    (cons ":want" want)
-                    (cons ":source" src)
-                    (cons ":leaves_ok" leaves)))
-            (begin
-              (prom:stats-bump! "correctness_fail")
-              (list (cons ":ok" #f)
-                    (cons ":decision" 'rollback)
-                    (cons ":reason" (if applied "verify-failed" "rebind-failed"))
-                    (cons ":snap" -1)
-                    (cons ":got" got)
-                    (cons ":want" want)
-                    (cons ":source" src)
-                    (cons ":leaves_ok" leaves)))))))))
+        ; Rebind + sample inside a 1-iter while (host residual H3: subject
+        ; samples outside while after set-code can be stale/zero).
+        (let ((body (prom:proposal-body proposal))
+              (want (prom:want-for-body body sample-arg))
+              (summary (prom:proposal-summary proposal))
+              (got -1)
+              (applied #f)
+              (leaves #f)
+              (done 0))
+          (while (lambda () (< done 1))
+            (lambda ()
+              (let ((r (prom:rebind-live "subject" body summary sample-arg)))
+                (set! applied (eq? (prom:alist-ref ":ok" r #f) #t))
+                (set! got (prom:alist-ref ":got" r -1))
+                (set! leaves (prom:leaves-intact? n-leaves))
+                (set! done 1))))
+          (let ((good (and applied (= got want) leaves)))
+            (if good
+              (begin
+                (prom:stats-bump! "correctness_ok")
+                (list (cons ":ok" #t)
+                      (cons ":decision" 'commit)
+                      (cons ":reason" "verified")
+                      (cons ":snap" -1)
+                      (cons ":got" got)
+                      (cons ":want" want)
+                      (cons ":source" src)
+                      (cons ":leaves_ok" leaves)))
+              (begin
+                (prom:stats-bump! "correctness_fail")
+                (list (cons ":ok" #f)
+                      (cons ":decision" 'rollback)
+                      (cons ":reason" (if applied "verify-failed" "rebind-failed"))
+                      (cons ":snap" -1)
+                      (cons ":got" got)
+                      (cons ":want" want)
+                      (cons ":source" src)
+                      (cons ":leaves_ok" leaves))))))))))

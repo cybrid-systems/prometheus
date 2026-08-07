@@ -41,3 +41,15 @@ Independent leaf defines `(define (f{i} x) (+ x i))` and a single deep nested ex
 **Impact:** probe structure constraint; not a denseness failure — continuous path is pure Aura and verifies correctly in-loop.
 
 **Status:** open host residual; not logged as escape.
+
+---
+
+## H4 — `aura-llm-call` recursion after heavy module load (2026-08-07)
+
+**Symptom:** After `(require "prometheus-min" all:)` (or other heavy loads), `(aura-llm-call …)` / `llm:chat` can hit `recursion depth exceeded (>700)` or fail in a few ms with empty body. Standalone `(require "std/llm")` works. Also free-vars can break after `set-code`.
+
+**Workaround:** Live denseness harness uses **curl** (`scripts/live-chat.sh`) for HTTPS, passes wire via `PROMETHEUS_LLM_WIRE`, and runs schema/execute in Aura. Probe `05-live-propose` is opt-in via `scripts/compare-live-llms.sh`.
+
+**Impact:** product live edge uses shell bridge for HTTP; core denseness path remains pure Aura.
+
+**Status:** open host residual; edge \(E\) still metered.

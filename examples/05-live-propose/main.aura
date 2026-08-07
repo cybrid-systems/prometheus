@@ -1,0 +1,217 @@
+; examples/05-live-propose/main.aura
+;
+; Live LLM propose edge denseness probe (opt-in; not in default offline suite).
+;
+; Preferred harness (avoids host residual H4 aura-llm-call recursion):
+;   ./scripts/compare-live-llms.sh
+; which curls the provider, writes PROMETHEUS_LLM_WIRE_FILE, then runs this probe.
+;
+; Manual:
+;   source ./scripts/env-minimax.sh   # or env-deepseek.sh
+;   ./scripts/live-chat.sh > /tmp/wire.txt
+;   PROMETHEUS_LLM_WIRE_FILE=/tmp/wire.txt PROMETHEUS_LLM_PROPOSE=live \
+;     ./scripts/run-aura.sh examples/05-live-propose/main.aura
+;
+; Axes: D + E + B + A + F. Core E=0; live HTTPS is edge E>=1 (curl harness).
+
+(require "prometheus-min" all:)
+(require "prometheus-llm" all:)
+(require "std/string" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 05-live-propose: live LLM propose edge ===")
+(newline)
+
+(define key (getenv "LLM_API_KEY"))
+(define base (getenv "LLM_BASE_URL"))
+(define model (getenv "LLM_MODEL"))
+(define provider (getenv "PROMETHEUS_LLM_PROVIDER"))
+(define mode (prom:propose-mode))
+(define wire-env (getenv "PROMETHEUS_LLM_WIRE"))
+(define chat-ms-env (getenv "PROMETHEUS_LLM_CHAT_MS"))
+(define chat-ms
+  (if (and (string? chat-ms-env) (> (string-length chat-ms-env) 0))
+    (let ((n (string->number chat-ms-env)))
+      (if (number? n) n 0))
+    0))
+
+(display "provider=")
+(display (if (and (string? provider) (> (string-length provider) 0)) provider "?"))
+(display " model=")
+(display (if (string? model) model "?"))
+(display " base=")
+(display (if (string? base) base "?"))
+(display " mode=")
+(display mode)
+(display " key?")
+(display (and (string? key) (> (string-length key) 0)))
+(display " wire?")
+(display (and (string? wire-env) (> (string-length wire-env) 0)))
+(newline)
+
+(define N-LEAVES 60)
+(define SAMPLE-ARG 7)
+(define INIT-GOT (* SAMPLE-ARG 2))
+
+(if (or (void? key) (not (string? key)) (= (string-length key) 0))
+  (begin
+    (display "FAIL: LLM_API_KEY not set")
+    (newline)
+    (display "RESULT fail example=05-live-propose reason=no-key")
+    (newline))
+  (if (not (equal? mode "live"))
+    (begin
+      (display "FAIL: PROMETHEUS_LLM_PROPOSE must be live")
+      (newline)
+      (display "RESULT fail example=05-live-propose reason=not-live-mode")
+      (newline))
+    (begin
+      ; ── 1. Load live wire from env (set by compare-live-llms / live-chat) ──
+      (prom:note-edge-escape!)
+      (let* ((wire-text (if (and (string? wire-env) (> (string-length wire-env) 0))
+                          wire-env
+                          #f))
+             (chat-ok (and (string? wire-text) (> (string-length wire-text) 0)
+                           (not (string-prefix? wire-text "HTTP_"))))
+             (p-live (if chat-ok
+                       (prom:parse-proposal-text wire-text "llm-live")
+                       #f))
+             (p-valid (and (pair? p-live) (prom:proposal-valid? p-live)))
+             (p-exec (if p-valid
+                       p-live
+                       (prom:propose-rule "auto" INIT-GOT SAMPLE-ARG)))
+             (p-src (prom:proposal-source p-exec))
+             (used-fallback (not p-valid)))
+        (display "chat ok=")
+        (display chat-ok)
+        (display " elapsed_ms=")
+        (display chat-ms)
+        (display " content_len=")
+        (display (if (string? wire-text) (string-length wire-text) 0))
+        (newline)
+        (display "chat content=")
+        (write (if (and (string? wire-text) (> (string-length wire-text) 280))
+                 (substring wire-text 0 280)
+                 wire-text))
+        (newline)
+        (display "parsed=")
+        (write p-live)
+        (display " valid=")
+        (display p-valid)
+        (display " fallback=")
+        (display used-fallback)
+        (newline)
+
+        ; ── 2. Install scale FlatAST ──
+        ; Note H3: top-level (subject n) after set-code can be stale; gate on
+        ; install flag + node/def counts. Correctness is verified in execute.
+        (let* ((installed (prom:install-scale-subject N-LEAVES))
+               (nc (prom:node-count))
+               (dc (prom:def-count))
+               (init-ok (and installed
+                             (>= nc (* N-LEAVES 5))
+                             (= dc (+ N-LEAVES 1)))))
+          (display "install ok=")
+          (display init-ok)
+          (display " installed=")
+          (display installed)
+          (display " nodes=")
+          (display nc)
+          (display " defs=")
+          (display dc)
+          (newline)
+
+          (if (not init-ok)
+            (begin
+              (display "FAIL: install")
+              (newline)
+              (display "RESULT fail example=05-live-propose reason=install")
+              (newline))
+            (begin
+              ; Literals 7 / 60: top-level defines can go stale after set-code (H3/H4).
+              (let* ((r1 (prom:execute-proposal p-exec 7 60))
+                     (d1 (prom:alist-ref ":decision" r1 #f))
+                     (got1 (prom:alist-ref ":got" r1 -1))
+                     (leaves (prom:leaves-intact? 60))
+                     (v-nodes (prom:validate-nodes-pass?))
+                     (v-own (prom:validate-ownership-pass?))
+                     (esc (prom:stats-ref "escapes")))
+                (display "P1=")
+                (write p-exec)
+                (newline)
+                (display "P1-src=")
+                (display p-src)
+                (display " escapes=")
+                (display esc)
+                (newline)
+                (display "P1-exec=")
+                (write r1)
+                (newline)
+                (display "final subject(7)=")
+                (display (prom:sample-subject SAMPLE-ARG))
+                (display " leaves=")
+                (display leaves)
+                (display " validate=")
+                (display v-nodes)
+                (display "/")
+                (display v-own)
+                (newline)
+
+                (let* ((edge-ok (>= esc 1))
+                       (core-ok (and leaves v-nodes v-own))
+                       (dec-ok (or (eq? d1 'commit) (eq? d1 'skip)
+                                   (equal? d1 "commit") (equal? d1 "skip")))
+                       (ideal (and chat-ok p-valid (not used-fallback)
+                                   (equal? p-src "llm-live") dec-ok core-ok))
+                       (acceptable (and edge-ok core-ok dec-ok)))
+                  (display "ideal_live_parse=")
+                  (display ideal)
+                  (display " acceptable_core=")
+                  (display acceptable)
+                  (newline)
+
+                  (if ideal
+                    (begin
+                      (display "PASS: live propose edge (parsed llm-live; core guarded)")
+                      (newline)
+                      (display "RESULT pass example=05-live-propose provider=")
+                      (display (if (string? provider) provider "?"))
+                      (display " model=")
+                      (display (if (string? model) model "?"))
+                      (display " chat_ms=")
+                      (display chat-ms)
+                      (display " decision=")
+                      (display d1)
+                      (display " got=")
+                      (display got1)
+                      (display " escapes=")
+                      (display esc)
+                      (newline))
+                    (if acceptable
+                      (begin
+                        (display "PASS_SOFT: live edge metered + core guarded (wire fallback)")
+                        (newline)
+                        (display "RESULT pass_soft example=05-live-propose provider=")
+                        (display (if (string? provider) provider "?"))
+                        (display " model=")
+                        (display (if (string? model) model "?"))
+                        (display " chat_ms=")
+                        (display chat-ms)
+                        (display " p1_src=")
+                        (display p-src)
+                        (display " chat_ok=")
+                        (display chat-ok)
+                        (display " valid=")
+                        (display p-valid)
+                        (display " escapes=")
+                        (display esc)
+                        (newline))
+                      (begin
+                        (display "FAIL: live propose denseness")
+                        (newline)
+                        (display "RESULT fail example=05-live-propose provider=")
+                        (display (if (string? provider) provider "?"))
+                        (display " model=")
+                        (display (if (string? model) model "?"))
+                        (newline)))))))))))))

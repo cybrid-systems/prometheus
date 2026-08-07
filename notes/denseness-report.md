@@ -54,6 +54,7 @@ Offline suite proves the **isolation architecture**. Live MiniMax/OpenAI-style c
 | [02](../examples/02-continuous-mutate/) | A B F | **PASS** | 0 | 0 |
 | [03](../examples/03-incremental-cost/) | A B C F | **PASS** | 0 | 0 |
 | [04](../examples/04-propose-edge/) | A B D E F | **PASS** (rule/schema/wire/stub) | 0 | ≥1 (stub/wire) |
+| [05](../examples/05-live-propose/) | A B D E F | **PASS** live MiniMax-M3 + deepseek-v4-flash *(manual harness)* | 0 | ≥1 HTTPS |
 
 ### 04 narrative
 
@@ -63,11 +64,25 @@ Offline suite proves the **isolation architecture**. Live MiniMax/OpenAI-style c
 - Stub: `source=llm-stub`, edge escape bumped, subject still verifies  
 - `live_required=no`  
 
+### 05 live comparison (2026-08-07)
+
+Harness: `./scripts/compare-live-llms.sh` (curl HTTPS → schema/execute on scale FlatAST).  
+Keys: `~/code/keys/minimax`, `~/code/keys/deepseek`.
+
+| Provider | Model | chat_ms | Wire | Exec | Core |
+|----------|-------|---------|------|------|------|
+| MiniMax | MiniMax-M3 | ~3.9s | `MUTATE\|subject\|(* x 3)\|…` | commit got=21 | leaves+validate ok, \(E_{edge}≥1\) |
+| DeepSeek | deepseek-v4-flash | ~2.4s | same shape | commit got=21 | same |
+
+Both **PASS** denseness isolation (parsed `llm-live`, schema valid, rebind verified). DeepSeek slightly faster on this prompt; MiniMax needs few-shot / repair for field-2=`subject` discipline under thinking models.
+
+HTTP is out-of-process (H4); evolvable core stays pure Aura.
+
 ---
 
 ## Judgment
 
-**Partial / near-complete on scoped paths.** Axes A–F each have constructive evidence with **core \(E=0\)**. Remaining: multi-N soak + formal denseness write-up (Phase 5), optional live propose smoke.
+**Partial / near-complete on scoped paths.** Axes A–F each have constructive evidence with **core \(E=0\)**. Live propose pressure tested on MiniMax-M3 and deepseek-v4-flash. Remaining: multi-N soak + formal denseness close-out (Phase 5).
 
 ---
 
