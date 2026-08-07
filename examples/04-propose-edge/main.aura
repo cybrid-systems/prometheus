@@ -1,0 +1,257 @@
+; examples/04-propose-edge/main.aura
+;
+; Phase 4 denseness probe — LLM propose edge isolation on scale FlatAST.
+; Offline: rule / schema / wire / stub. Live API is OPT-IN and not required.
+;
+; Axes: A (scale) + B (mutate) + D (LLM surface) + E (edge escape) + F
+;
+; Scenarios:
+;   A  rule propose triple → commit, core E=0
+;   B  schema refuse bad kind / bad body (no mutate)
+;   C  wire parse good line → commit; garbage → refuse
+;   D  stub propose (edge E≥1) → commit; core path still pure after schema
+;
+; Run: ./scripts/run-aura.sh examples/04-propose-edge/main.aura
+; Live (optional): PROMETHEUS_LLM_PROPOSE=live LLM_API_KEY=... ./scripts/run-aura.sh ...
+
+(require "prometheus-min" all:)
+(require "prometheus-llm" all:)
+(require "std/string" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 04-propose-edge: schema/wire/stub isolation ===")
+(newline)
+(display "prom:min-version=")
+(display prom:min-version)
+(display " llm-version=")
+(display prom:llm-version)
+(display " propose-mode=")
+(display (prom:propose-mode))
+(newline)
+(display "NOTE: live LLM API not required for denseness; mode=rule/stub/wire offline.")
+(newline)
+
+(define N-LEAVES 80)
+(define SAMPLE-ARG 7)
+
+; ── Install scale + subject (double) ──
+(let* ((installed (prom:install-scale-subject N-LEAVES))
+       (init (prom:sample-subject SAMPLE-ARG))
+       (init-ok (and installed
+                     (prom:check-true installed)
+                     (prom:check-eq init (* SAMPLE-ARG 2))
+                     (prom:check-true (prom:leaves-intact? N-LEAVES)))))
+  (display "install ok=")
+  (display init-ok)
+  (display " subject(7)=")
+  (display init)
+  (display " nodes=")
+  (display (prom:node-count))
+  (newline)
+
+  (if (not init-ok)
+    (begin
+      (display "FAIL: install")
+      (newline)
+      (display "RESULT fail example=04-propose-edge")
+      (newline))
+    (begin
+      ; ════════════════════════════════════════════════════
+      ; A: rule propose → commit, escapes stay 0
+      ; ════════════════════════════════════════════════════
+      (prom:stats-reset!)
+      (let* ((p-rule (prom:propose-rule "auto" init SAMPLE-ARG))
+             (r-rule (prom:execute-proposal p-rule SAMPLE-ARG N-LEAVES))
+             (a-ok (and (equal? (prom:proposal-source p-rule) "rule")
+                        (prom:proposal-valid? p-rule)
+                        (eq? (prom:alist-ref ":decision" r-rule #f) 'commit)
+                        (prom:check-eq (prom:alist-ref ":got" r-rule -1)
+                                       (* SAMPLE-ARG 3))
+                        (prom:check-eq (prom:stats-ref "escapes") 0))))
+        (display "A rule proposal=")
+        (write p-rule)
+        (newline)
+        (display "A exec=")
+        (write r-rule)
+        (newline)
+        (display "A ok=")
+        (display a-ok)
+        (display " escapes=")
+        (display (prom:stats-ref "escapes"))
+        (newline)
+
+        ; ════════════════════════════════════════════════════
+        ; B: schema refuse — bad kind + illegal body
+        ; ════════════════════════════════════════════════════
+        (let* ((p-bad-kind
+                 (list "explode" "subject" prom:body-triple "evil" "adversary"))
+               (r-bad-kind (prom:execute-proposal p-bad-kind SAMPLE-ARG N-LEAVES))
+               (got-before (prom:sample-subject SAMPLE-ARG))
+               (p-bad-body
+                 (list "mutate" "subject" "rm -rf /" "hack" "adversary"))
+               (r-bad-body (prom:execute-proposal p-bad-body SAMPLE-ARG N-LEAVES))
+               (got-after (prom:sample-subject SAMPLE-ARG))
+               (p-bad-name
+                 (list "mutate" "f0" prom:body-triple "wrong-target" "adversary"))
+               (r-bad-name (prom:execute-proposal p-bad-name SAMPLE-ARG N-LEAVES))
+               (b-ok (and (not (prom:proposal-valid? p-bad-kind))
+                          (eq? (prom:alist-ref ":decision" r-bad-kind #f) 'refuse)
+                          (equal? (prom:alist-ref ":reason" r-bad-kind "")
+                                  "schema-invalid")
+                          (not (prom:proposal-valid? p-bad-body))
+                          (eq? (prom:alist-ref ":decision" r-bad-body #f) 'refuse)
+                          (not (prom:proposal-valid? p-bad-name))
+                          (eq? (prom:alist-ref ":decision" r-bad-name #f) 'refuse)
+                          ; subject unchanged by refuses (still triple from A)
+                          (prom:check-eq got-before (* SAMPLE-ARG 3))
+                          (prom:check-eq got-after (* SAMPLE-ARG 3))
+                          (prom:check-true #t))))
+          (display "B bad-kind refuse=")
+          (write r-bad-kind)
+          (newline)
+          (display "B bad-body refuse=")
+          (write r-bad-body)
+          (newline)
+          (display "B bad-name refuse=")
+          (write r-bad-name)
+          (newline)
+          (display "B ok=")
+          (display b-ok)
+          (display " subject still=")
+          (display got-after)
+          (newline)
+
+          ; ════════════════════════════════════════════════════
+          ; C: wire parse — good, garbage, illegal body line
+          ; ════════════════════════════════════════════════════
+          (let* ((wire-good
+                   (string-append
+                     "Sure, suggestion:\n"
+                     "MUTATE|subject|" prom:body-quint "|widen-from-wire\n"
+                     "Thanks!"))
+                 (p-wire (prom:parse-proposal-text wire-good "wire"))
+                 ; wire text is external edge — meter E
+                 (_e1 (prom:note-edge-escape!))
+                 (r-wire (prom:execute-proposal p-wire SAMPLE-ARG N-LEAVES))
+                 (c-good (and (pair? p-wire)
+                              (prom:proposal-valid? p-wire)
+                              (eq? (prom:alist-ref ":decision" r-wire #f) 'commit)
+                              (prom:check-eq (prom:alist-ref ":got" r-wire -1)
+                                             (* SAMPLE-ARG 5))
+                              (>= (prom:stats-ref "escapes") 1)))
+                 (p-garbage (prom:parse-proposal-text
+                              "just rewrite everything in python lol" "wire"))
+                 (r-garbage
+                   (if p-garbage
+                     (prom:execute-proposal p-garbage SAMPLE-ARG N-LEAVES)
+                     (list (cons ":ok" #f)
+                           (cons ":decision" 'refuse)
+                           (cons ":reason" "parse-failed"))))
+                 (c-garbage (and (not p-garbage)
+                                 (eq? (prom:alist-ref ":decision" r-garbage #f)
+                                      'refuse)))
+                 (p-hack (prom:parse-proposal-text
+                           "MUTATE|subject|rm -rf /|hack" "wire"))
+                 (r-hack
+                   (if p-hack
+                     (prom:execute-proposal p-hack SAMPLE-ARG N-LEAVES)
+                     (list (cons ":ok" #f)
+                           (cons ":decision" 'refuse)
+                           (cons ":reason" "parse-failed"))))
+                 (c-hack (and (pair? p-hack)
+                              (not (prom:proposal-valid? p-hack))
+                              (eq? (prom:alist-ref ":decision" r-hack #f) 'refuse)
+                              ; still quint after refuse
+                              (prom:check-eq (prom:sample-subject SAMPLE-ARG)
+                                             (* SAMPLE-ARG 5))))
+                 (c-ok (and c-good c-garbage c-hack)))
+            (display "C wire-good exec=")
+            (write r-wire)
+            (newline)
+            (display "C garbage=")
+            (write r-garbage)
+            (newline)
+            (display "C hack refuse=")
+            (write r-hack)
+            (newline)
+            (display "C ok=")
+            (display c-ok)
+            (newline)
+
+            ; ════════════════════════════════════════════════════
+            ; D: stub propose edge E≥1, then commit triple
+            ; ════════════════════════════════════════════════════
+            (let* ((esc-before (prom:stats-ref "escapes"))
+                   (p-stub (prom:propose-stub "triple"
+                              (prom:sample-subject SAMPLE-ARG)
+                              SAMPLE-ARG))
+                   (r-stub (prom:execute-proposal p-stub SAMPLE-ARG N-LEAVES))
+                   (d-ok (and (equal? (prom:proposal-source p-stub) "llm-stub")
+                              (prom:proposal-valid? p-stub)
+                              (eq? (prom:alist-ref ":decision" r-stub #f) 'commit)
+                              (prom:check-eq (prom:alist-ref ":got" r-stub -1)
+                                             (* SAMPLE-ARG 3))
+                              (prom:check-true
+                                (>= (prom:stats-ref "escapes") (+ esc-before 1)))
+                              (prom:check-true (prom:leaves-intact? N-LEAVES))
+                              (prom:check-true (prom:validate-nodes-pass?)))))
+              (display "D stub proposal=")
+              (write p-stub)
+              (newline)
+              (display "D exec=")
+              (write r-stub)
+              (newline)
+              (display "D ok=")
+              (display d-ok)
+              (display " escapes=")
+              (display (prom:stats-ref "escapes"))
+              (newline)
+
+              ; ── Prompt surface exists (pure Aura string) ──
+              (let* ((prompt (prom:proposal-prompt SAMPLE-ARG
+                                (prom:sample-subject SAMPLE-ARG)))
+                     (prompt-ok (prom:check-true
+                                  (and (string? prompt)
+                                       (> (string-length prompt) 20)))))
+                (display "prompt length=")
+                (display (string-length prompt))
+                (display " ok=")
+                (display prompt-ok)
+                (newline)
+
+                (display "stats: ")
+                (write (prom:stats-alist))
+                (newline)
+
+                (let ((all-ok
+                        (and a-ok b-ok c-ok d-ok prompt-ok
+                             (>= (prom:stats-ref "escapes") 1)
+                             ; core commits succeeded; refuses did not corrupt
+                             (prom:leaves-intact? N-LEAVES)
+                             (prom:validate-nodes-pass?)
+                             (prom:validate-ownership-pass?))))
+                  (if all-ok
+                    (begin
+                      (display "PASS: propose edge isolated (rule E=0; stub/wire edge E metered)")
+                      (newline)
+                      (display "RESULT pass example=04-propose-edge escapes=")
+                      (display (prom:stats-ref "escapes"))
+                      (display " mode=")
+                      (display (prom:propose-mode))
+                      (display " live_required=no")
+                      (newline))
+                    (begin
+                      (display "FAIL: propose-edge denseness probe")
+                      (newline)
+                      (display "RESULT fail example=04-propose-edge")
+                      (newline)
+                      (display "  A=")
+                      (display a-ok)
+                      (display " B=")
+                      (display b-ok)
+                      (display " C=")
+                      (display c-ok)
+                      (display " D=")
+                      (display d-ok)
+                      (newline))))))))))))

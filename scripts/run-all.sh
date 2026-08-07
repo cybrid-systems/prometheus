@@ -8,6 +8,7 @@ PROBES=(
   01-minimal-scale
   02-continuous-mutate
   03-incremental-cost
+  04-propose-edge
 )
 
 pass=0

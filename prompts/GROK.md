@@ -73,16 +73,19 @@ Verify correctness + incremental envelope  →  Rollback (if needed)  →  next 
 
 ## Current phase goal
 
-**Phase 1–3 landed:**
-- `01-minimal-scale` — large FlatAST construct + metrology (A+F, \(E=0\))
-- `02-continuous-mutate` — continuous typed rebind + poison/restore (A+B+F, \(E=0\))
-- `03-incremental-cost` — generation / partial relower / dirty ratio / latency envelope (A+B+C+F, \(E=0\))
+**Phase 1–4 landed:**
+- `01-minimal-scale` — scale FlatAST + metrology (A+F)
+- `02-continuous-mutate` — continuous rebind + poison/restore (A+B+F)
+- `03-incremental-cost` — incremental cost envelope (A+B+C+F)
+- `04-propose-edge` — schema/wire/stub propose isolation (A+B+D+E+F); **live API not required**
 
-**Next:** Phase 4 LLM propose edge isolation (schema / wire / stub / live) — axes D+E.
+**Next:** Phase 5 scale soak + denseness judgment write-up.
 
 When generating code or probes, keep the denseness claim **testable** and the escape discipline **strict**.
 
 **Host residuals to respect:** H1 (no cross-define call chains after set-code), H3 (sample rebind results inside continuous while, not only top-level after).
+
+**LLM:** default `PROMETHEUS_LLM_PROPOSE=rule`. Stub meters edge \(E\). Live is opt-in only.
 
 ### After generating
 

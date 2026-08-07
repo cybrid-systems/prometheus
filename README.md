@@ -158,7 +158,7 @@ prometheus/
 | **1** | Minimal large-AST construction + baseline metrology | **landed** (`01-minimal-scale`) |
 | **2** | Continuous typed mutation + dirty cascade under controlled load | **landed** (`02-continuous-mutate`) |
 | **3** | Incremental cost observability + generation / cache behavior | **landed** (`03-incremental-cost`) |
-| **4** | LLM propose edge (schema / wire / stub / live) isolation | planned |
+| **4** | LLM propose edge (schema / wire / stub; live opt-in) | **landed** (`04-propose-edge`) |
 | **5** | Scale soak + denseness judgment | planned |
 
 ## Escape discipline
@@ -178,13 +178,13 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus)
 
 ## Status
 
-**Phase 1–3 landed.** Scale FlatAST + continuous rebind + decision-grade incremental cost envelope pass with core \(E=0\). LLM propose edge (D), scale boundary (E), and soak judgment remain open.
+**Phase 1–4 landed.** Scale + continuous rebind + incremental cost + propose-edge isolation pass with core \(E=0\). **Live LLM API is not required** for denseness (rule/schema/wire/stub offline). Soak judgment (Phase 5) remains open.
 
 ```bash
 ./scripts/check-structure.sh    # no binary required
-./scripts/run-all.sh
-# later:
-./scripts/overnight-scale.sh
+./scripts/run-all.sh            # offline; no API key
+# optional live propose pressure:
+# PROMETHEUS_LLM_PROPOSE=live LLM_API_KEY=... ./scripts/run-aura.sh examples/04-propose-edge/main.aura
 ```
 
 Prometheus continues Aura Unify’s constructive measurement program after Aether’s agent-loop and Hephaestus’ performance denseness results — pressure-testing the same basis on the large-scale continuous AST mutation + incremental compilation subspace.

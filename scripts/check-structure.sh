@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 missing=0
-for f in README.md LICENSE notes/aura-unify.md notes/denseness-report.md notes/escape-log.md notes/host-residuals.md prompts/GROK.md scripts/run-aura.sh scripts/run-all.sh lib/prometheus-min.aura lib/prometheus-measure.aura lib/prometheus-scale.aura lib/prometheus-mutate.aura lib/prometheus-cost.aura examples/01-minimal-scale/main.aura examples/02-continuous-mutate/main.aura examples/03-incremental-cost/main.aura; do
+for f in README.md LICENSE notes/aura-unify.md notes/denseness-report.md notes/escape-log.md notes/host-residuals.md prompts/GROK.md scripts/run-aura.sh scripts/run-all.sh lib/prometheus-min.aura lib/prometheus-measure.aura lib/prometheus-scale.aura lib/prometheus-mutate.aura lib/prometheus-cost.aura lib/prometheus-llm.aura examples/01-minimal-scale/main.aura examples/02-continuous-mutate/main.aura examples/03-incremental-cost/main.aura examples/04-propose-edge/main.aura; do
   if [[ ! -e "$f" ]]; then
     echo "MISSING: $f"
     missing=1
@@ -13,7 +13,7 @@ for f in README.md LICENSE notes/aura-unify.md notes/denseness-report.md notes/e
 done
 
 if [[ $missing -eq 0 ]]; then
-  echo "OK: prometheus structure present (phase 1–3)"
+  echo "OK: prometheus structure present (phase 1–4)"
 else
   echo "FAIL: structure incomplete"
   exit 1

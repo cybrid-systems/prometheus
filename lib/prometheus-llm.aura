@@ -1,0 +1,311 @@
+; lib/prometheus-llm.aura — Axis D/E: propose edge (schema / wire / stub / live)
+;
+; (require "prometheus-llm" all:)
+;
+; Proposal is a 5-list:
+;   (kind name body summary source)
+;   kind   ∈ {"mutate","skip"}
+;   name   must be "subject" (only continuous-edit target)
+;   body   lambda source string for mutate:rebind
+;   source ∈ {"rule","llm-stub","wire","llm-live",...}
+;
+; Denseness posture:
+;   - rule / pure schema path: core E=0
+;   - stub / wire-sim / live: edge E ≥ 1 (metered); schema still gates before rebind
+;   - Live HTTPS is OPT-IN via PROMETHEUS_LLM_PROPOSE=live + LLM_API_KEY;
+;     offline denseness suite never requires a live API.
+
+(export prom:llm-version
+        prom:propose-mode
+        prom:proposal-kind
+        prom:proposal-name
+        prom:proposal-body
+        prom:proposal-summary
+        prom:proposal-source
+        prom:proposal-errors
+        prom:proposal-valid?
+        prom:body-double
+        prom:body-triple
+        prom:body-quint
+        prom:body-sept
+        prom:body-poison
+        prom:propose-rule
+        prom:propose-stub
+        prom:propose
+        prom:parse-proposal-text
+        prom:proposal-prompt
+        prom:execute-proposal
+        prom:note-edge-escape!)
+
+(require "prometheus-measure" all:)
+(require "prometheus-mutate" all:)
+(require "std/string" all:)
+
+(define prom:llm-version 1)
+
+(define prom:body-double "(lambda (x) (* x 2))")
+(define prom:body-triple "(lambda (x) (* x 3))")
+(define prom:body-quint "(lambda (x) (* x 5))")
+(define prom:body-sept "(lambda (x) (* x 7))")
+(define prom:body-poison "(lambda (x) (* x 99))")
+
+(define (prom:proposal-kind p) (car p))
+(define (prom:proposal-name p) (car (cdr p)))
+(define (prom:proposal-body p) (car (cdr (cdr p))))
+(define (prom:proposal-summary p) (car (cdr (cdr (cdr p)))))
+(define (prom:proposal-source p)
+  (if (null? (cdr (cdr (cdr (cdr p)))))
+    "rule"
+    (car (cdr (cdr (cdr (cdr p)))))))
+
+; ── Mode ─────────────────────────────────────────────────────
+
+(define (prom:propose-mode)
+  (let ((v (getenv "PROMETHEUS_LLM_PROPOSE")))
+    (if (or (void? v) (not (string? v)) (equal? v "") (equal? v "0") (equal? v "rule"))
+      "rule"
+      (if (or (equal? v "1") (equal? v "live") (equal? v "llm"))
+        "live"
+        (if (equal? v "stub")
+          "stub"
+          "rule")))))
+
+(define (prom:note-edge-escape!)
+  (prom:stats-bump! "escapes")
+  (prom:stats-set! "last_escape_reason" 1)
+  (prom:stats-ref "escapes"))
+
+; ── Schema ───────────────────────────────────────────────────
+
+; Allowed mutate bodies for Phase 4 denseness (whitelist + structural).
+(define (prom:body-allowed? body)
+  (and (string? body)
+       (> (string-length body) 10)
+       (< (string-length body) 80)
+       (string-prefix? body "(lambda")
+       (string-contains? body "x")
+       (string-contains? body "*")
+       (string-contains? body ")")
+       (not (string-contains? body "define"))
+       (not (string-contains? body "set!"))
+       (not (string-contains? body "require"))
+       (not (string-contains? body "eval"))
+       (not (string-contains? body "gate"))
+       (not (string-contains? body "subject"))
+       (or (equal? body prom:body-double)
+           (equal? body prom:body-triple)
+           (equal? body prom:body-quint)
+           (equal? body prom:body-sept)
+           (equal? body prom:body-poison))))
+
+(define (prom:proposal-errors p)
+  (if (not (pair? p))
+    (list "not-a-list")
+    (if (null? (cdr (cdr (cdr p))))
+      (list "too-short")
+      (let ((kind (car p))
+            (name (car (cdr p)))
+            (body (car (cdr (cdr p))))
+            (summary (car (cdr (cdr (cdr p)))))
+            (errs (quote ())))
+        (if (not (or (equal? kind "mutate") (equal? kind "skip")))
+          (set! errs (cons "bad-kind" errs))
+          #f)
+        (if (not (and (string? name) (equal? name "subject")))
+          (set! errs (cons "bad-name" errs))
+          #f)
+        (if (not (string? summary))
+          (set! errs (cons "bad-summary" errs))
+          #f)
+        (if (equal? kind "skip")
+          (if (not (string? body))
+            (set! errs (cons "bad-skip-body" errs))
+            #f)
+          (if (not (prom:body-allowed? body))
+            (set! errs (cons "bad-mutate-body" errs))
+            #f))
+        errs))))
+
+(define (prom:proposal-valid? p)
+  (null? (prom:proposal-errors p)))
+
+; Closed-form want for sample-arg given a known body string.
+(define (prom:want-for-body body sample-arg)
+  (cond
+    ((equal? body prom:body-double) (* sample-arg 2))
+    ((equal? body prom:body-triple) (* sample-arg 3))
+    ((equal? body prom:body-quint) (* sample-arg 5))
+    ((equal? body prom:body-sept) (* sample-arg 7))
+    ((equal? body prom:body-poison) (* sample-arg 99))
+    (else -1)))
+
+; ── Wire parse ───────────────────────────────────────────────
+
+(define (prom:proposal-prompt sample-arg current-got)
+  (string-append
+    "Return ONLY one line: "
+    "MUTATE|subject|(lambda (x) (* x N))|summary OR SKIP|subject||summary. "
+    "N in {2,3,5,7}. sample-arg="
+    (if (number? sample-arg) (number->string sample-arg) "7")
+    " current-got="
+    (if (number? current-got) (number->string current-got) "?")
+    ". Prefer triple when current is double. No markdown."))
+
+(define (prom:parse-proposal-text text source)
+  (if (not (string? text))
+    #f
+    (let ((len (string-length text)))
+      (let ((tail (if (<= len 240) text (substring text (- len 240) len))))
+        (let ((parts (string-split tail "\n")))
+          (let loop ((xs parts))
+            (cond
+              ((null? xs) #f)
+              ((equal? (car xs) "") (loop (cdr xs)))
+              ((> (string-length (car xs)) 200) (loop (cdr xs)))
+              ((or (string-prefix? (car xs) "MUTATE|")
+                   (string-prefix? (car xs) "mutate|")
+                   (string-prefix? (car xs) "SKIP|")
+                   (string-prefix? (car xs) "skip|"))
+               (let ((bits (string-split (car xs) "|")))
+                 (if (< (length bits) 4)
+                   #f
+                   (let ((k0 (list-ref bits 0)))
+                     (list (if (or (equal? k0 "MUTATE") (equal? k0 "mutate"))
+                             "mutate"
+                             (if (or (equal? k0 "SKIP") (equal? k0 "skip"))
+                               "skip"
+                               k0))
+                           (list-ref bits 1)
+                           (list-ref bits 2)
+                           (list-ref bits 3)
+                           (if (string? source) source "wire"))))))
+              (else (loop (cdr xs))))))))))
+
+; ── Propose ──────────────────────────────────────────────────
+
+; mode: "triple" | "quint" | "double" | "noop" | "auto" | "poison"
+; current-got: last (subject sample-arg) observation for auto policy
+(define (prom:propose-rule mode current-got sample-arg)
+  (cond
+    ((equal? mode "triple")
+     (list "mutate" "subject" prom:body-triple "rule-triple" "rule"))
+    ((equal? mode "quint")
+     (list "mutate" "subject" prom:body-quint "rule-quint" "rule"))
+    ((equal? mode "double")
+     (list "mutate" "subject" prom:body-double "rule-double" "rule"))
+    ((equal? mode "poison")
+     (list "mutate" "subject" prom:body-poison "rule-poison" "rule"))
+    ((equal? mode "noop")
+     (list "skip" "subject" "" "rule-noop" "rule"))
+    ((equal? mode "auto")
+     (if (and (number? current-got) (number? sample-arg)
+              (= current-got (* sample-arg 2)))
+       (list "mutate" "subject" prom:body-triple "rule-auto-triple" "rule")
+       (list "skip" "subject" "" "rule-auto-noop" "rule")))
+    (else
+     (list "skip" "subject" "" "rule-default-noop" "rule"))))
+
+(define (prom:propose-stub mode current-got sample-arg)
+  (prom:note-edge-escape!)
+  (let ((p (prom:propose-rule mode current-got sample-arg)))
+    (list (car p)
+          (car (cdr p))
+          (car (cdr (cdr p)))
+          (string-append "llm-stub:" (car (cdr (cdr (cdr p)))))
+          "llm-stub")))
+
+; Live path: opt-in only. Without key or on failure, fall back to rule body
+; but still mark edge escape (attempted live edge).
+(define (prom:propose-live mode current-got sample-arg)
+  (prom:note-edge-escape!)
+  (let ((fallback (prom:propose-rule mode current-got sample-arg))
+        (key (getenv "LLM_API_KEY")))
+    (if (or (void? key) (not (string? key)) (equal? key "")
+            (= (string-length key) 0))
+      (list (car fallback) (car (cdr fallback)) (car (cdr (cdr fallback)))
+            "llm-nokey" "llm-live")
+      (begin
+        (require "std/llm" all:)
+        (let ((sys
+                "Reply with EXACTLY one line: MUTATE|subject|(lambda (x) (* x N))|summary OR SKIP|subject||summary. N in {2,3,5,7}. No markdown.")
+              (usr (prom:proposal-prompt sample-arg current-got)))
+          (let ((resp (try (llm:chat sys usr) (catch (e) #f))))
+            (let ((text
+                    (if (string? resp)
+                      resp
+                      (if (hash? resp)
+                        (if (hash-ref resp "ok" #f)
+                          (let ((c (hash-ref resp "content" "")))
+                            (if (string? c) c ""))
+                          "")
+                        ""))))
+              (let ((parsed (prom:parse-proposal-text text "llm-live")))
+                (if (and (pair? parsed) (prom:proposal-valid? parsed))
+                  parsed
+                  (list (car fallback) (car (cdr fallback))
+                        (car (cdr (cdr fallback)))
+                        "llm-parse-fallback" "llm-live"))))))))))
+
+(define (prom:propose mode current-got sample-arg)
+  (let ((pm (prom:propose-mode)))
+    (if (equal? pm "stub")
+      (prom:propose-stub mode current-got sample-arg)
+      (if (equal? pm "live")
+        (prom:propose-live mode current-got sample-arg)
+        (prom:propose-rule mode current-got sample-arg)))))
+
+; ── Execute (schema-gated rebind) ────────────────────────────
+
+; Returns alist:
+;   :ok :decision (commit|skip|refuse|rollback) :reason :snap :got :want :source
+; sample-arg used for closed-form verify after mutate.
+; n-leaves for leaf integrity check.
+(define (prom:execute-proposal proposal sample-arg n-leaves)
+  (if (not (prom:proposal-valid? proposal))
+    (list (cons ":ok" #f)
+          (cons ":decision" 'refuse)
+          (cons ":reason" "schema-invalid")
+          (cons ":errors" (prom:proposal-errors proposal))
+          (cons ":snap" -1)
+          (cons ":got" -1)
+          (cons ":want" -1)
+          (cons ":source" (try (prom:proposal-source proposal) (catch (e) "?"))))
+    (let ((kind (prom:proposal-kind proposal))
+          (src (prom:proposal-source proposal)))
+      (if (equal? kind "skip")
+        (list (cons ":ok" #t)
+              (cons ":decision" 'skip)
+              (cons ":reason" "no-mutate")
+              (cons ":snap" -1)
+              (cons ":got" (prom:sample-subject sample-arg))
+              (cons ":want" -1)
+              (cons ":source" src))
+        (let* ((body (prom:proposal-body proposal))
+               (want (prom:want-for-body body sample-arg))
+               (summary (prom:proposal-summary proposal))
+               (r (prom:rebind-live "subject" body summary sample-arg))
+               (got (prom:alist-ref ":got" r -1))
+               (leaves (prom:leaves-intact? n-leaves))
+               (applied (eq? (prom:alist-ref ":ok" r #f) #t))
+               (good (and applied (= got want) leaves)))
+          (if good
+            (begin
+              (prom:stats-bump! "correctness_ok")
+              (list (cons ":ok" #t)
+                    (cons ":decision" 'commit)
+                    (cons ":reason" "verified")
+                    (cons ":snap" -1)
+                    (cons ":got" got)
+                    (cons ":want" want)
+                    (cons ":source" src)
+                    (cons ":leaves_ok" leaves)))
+            (begin
+              (prom:stats-bump! "correctness_fail")
+              (list (cons ":ok" #f)
+                    (cons ":decision" 'rollback)
+                    (cons ":reason" (if applied "verify-failed" "rebind-failed"))
+                    (cons ":snap" -1)
+                    (cons ":got" got)
+                    (cons ":want" want)
+                    (cons ":source" src)
+                    (cons ":leaves_ok" leaves)))))))))

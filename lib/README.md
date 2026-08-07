@@ -8,20 +8,20 @@ Composable denseness helpers. Prefer these modules from probes; do not fork Aura
 | `prometheus-scale.aura` | A | Large FlatAST builders + install + observe |
 | `prometheus-mutate.aura` | B | Continuous rebind, poison/restore, safety |
 | `prometheus-cost.aura` | C | Incremental cost envelope (gen/relower/dirty/jit) |
-| `prometheus-min.aura` | A–C F | Facade re-export for Phase 1–3 probes |
-| `prometheus-llm.aura` | D | *(planned)* propose-edge schema / wire helpers |
-| `prometheus-escape.aura` | E | *(planned)* escape metering helpers |
+| `prometheus-llm.aura` | D E | Propose edge: schema / wire / stub / live(opt) |
+| `prometheus-min.aura` | A–F | Facade re-export for Phase 1–4 probes |
+| `prometheus-escape.aura` | E | *(optional later)* extra escape helpers |
 
 Host resolution: `scripts/run-aura.sh` sets `AURA_PATH` to `../aura-grok/lib:./lib`.
 
 ```scheme
 (require "prometheus-min" all:)
+; or thin: (require "prometheus-llm" all:)
 ```
 
-## Surfaces by phase
+## Propose edge (Phase 4)
 
-- **Phase 1:** leaves + deep nest → `set-code` FlatAST; `stats:get` node/def/gen  
-- **Phase 2:** backdrop + `subject` lambda; continuous `mutate:rebind`; poison/`ast:restore`  
-- **Phase 3:** before/after cost snapshot + deltas; partial relower, dirty ratio, gen bump, latency  
-
-Timing uses host `(monotonic-ms)`. Sample rebind results inside continuous helpers (H3).
+- Wire: `MUTATE|subject|(lambda (x) (* x N))|summary` with `N∈{2,3,5,7}`
+- Schema refuses bad kind / non-`subject` target / illegal body before rebind
+- Modes: `PROMETHEUS_LLM_PROPOSE=rule|stub|live` (default **rule**, offline)
+- Live needs `LLM_API_KEY`; denseness suite does **not** require it
