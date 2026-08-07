@@ -1,0 +1,217 @@
+; lib/prometheus-cost.aura — Axis C: incremental cost / generation / cache metrology
+;
+; (require "prometheus-cost" all:)
+;
+; Decision-grade surfaces composed from pure-Aura reads of host stats:
+;   - ast:generation / ast:generation-stats
+;   - query:compiler-core-incremental-stats (partial-relower / full-fallbacks)
+;   - engine:metrics groups compile / jit / mutate (dirty ratio, relower skips)
+;   - per-round elapsed_ms envelope under continuous rebind
+;
+; Does not fork engine primitives; only composes stats:get + engine:metrics.
+
+(export prom:cost-version
+        prom:hash-num
+        prom:stats-num
+        prom:engine-group-num
+        prom:observe-cost!
+        prom:cost-delta
+        prom:cost-alist-ref
+        prom:incremental-envelope!)
+
+(require "prometheus-measure" all:)
+(require "prometheus-scale" all:)
+(require "prometheus-mutate" all:)
+(require "std/stats" all:)
+(require "std/string" all:)
+
+(define prom:cost-version 1)
+
+(define (prom:hash-num h key default)
+  (if (hash? h)
+    (let ((v (hash-ref h key default)))
+      (if (number? v) v default))
+    default))
+
+(define (prom:stats-num name key default)
+  (let ((h (try (stats:get name) (catch (e) #f))))
+    (cond
+      ((hash? h) (prom:hash-num h key default))
+      ((and (number? h) (string=? key "")) h)
+      (else default))))
+
+(define (prom:engine-group-num group key default)
+  (let ((h (try (engine:metrics :group group) (catch (e) #f))))
+    (prom:hash-num h key default)))
+
+; Snapshot of decision-grade incremental metrics as alist of numbers.
+(define (prom:observe-cost!)
+  (let* ((gen (prom:generation))
+         (gen-bump (prom:stats-num "ast:generation-stats" "bump-generation-total" 0))
+         (gen-cur (prom:stats-num "ast:generation-stats" "current-generation" gen))
+         (partial (prom:stats-num "query:compiler-core-incremental-stats"
+                                  "partial-relower-hits" 0))
+         (full-fb (prom:stats-num "query:compiler-core-incremental-stats"
+                                  "full-fallbacks" 0))
+         (impact (prom:stats-num "query:compiler-core-incremental-stats"
+                                 "impact-blocks" 0))
+         (blocks-relowered (prom:stats-num "query:incremental-closure-stats"
+                                           "blocks-relowered" 0))
+         (jit-sync (prom:stats-num "query:incremental-closure-stats"
+                                   "jit-sync-count" 0))
+         (relower-skip (prom:engine-group-num "compile"
+                                              "relower_instruction_skip_total" 0))
+         (relower-saved (prom:engine-group-num "compile"
+                                               "relower_partial_insts_saved_total" 0))
+         (relower-ok (prom:engine-group-num "compile"
+                                            "relower_fallback_ok_total" 0))
+         (relower-full (prom:engine-group-num "compile"
+                                              "relower_full_called_count" 0))
+         (cascade-full (prom:engine-group-num "compile" "cascade_full_count" 0))
+         (cascade-body (prom:engine-group-num "compile" "cascade_body_only_count" 0))
+         (jit-partial (prom:engine-group-num "jit"
+                                             "jit_partial_recompile_requests_total" 0))
+         (jit-evict (prom:engine-group-num "jit" "jit_cache_evictions" 0))
+         (jit-compile (prom:engine-group-num "jit" "jit_compilations" 0))
+         (jit-hotswap (prom:engine-group-num "jit"
+                                             "jit_hotswap_invalidate_total" 0))
+         (dirty-num (prom:engine-group-num "mutate"
+                                           "dirty_block_ratio_numerator_total" 0))
+         (dirty-den (prom:engine-group-num "mutate"
+                                           "dirty_block_ratio_denominator_total" 0))
+         (dirty-prop (prom:engine-group-num "mutate"
+                                            "dirty_propagation_to_ir_count" 0))
+         (hold-us (prom:engine-group-num "mutate"
+                                         "mutation_hold_duration_us_total" 0))
+         (nodes (prom:node-count))
+         (defs (prom:def-count)))
+    (prom:stats-set! "last_generation" gen)
+    (prom:stats-set! "last_node_count" nodes)
+    (list (cons ":generation" gen)
+          (cons ":gen_bump_total" gen-bump)
+          (cons ":gen_current" gen-cur)
+          (cons ":partial_relower_hits" partial)
+          (cons ":full_fallbacks" full-fb)
+          (cons ":impact_blocks" impact)
+          (cons ":blocks_relowered" blocks-relowered)
+          (cons ":jit_sync_count" jit-sync)
+          (cons ":relower_instr_skip" relower-skip)
+          (cons ":relower_insts_saved" relower-saved)
+          (cons ":relower_fallback_ok" relower-ok)
+          (cons ":relower_full_called" relower-full)
+          (cons ":cascade_full" cascade-full)
+          (cons ":cascade_body_only" cascade-body)
+          (cons ":jit_partial_recompile" jit-partial)
+          (cons ":jit_cache_evictions" jit-evict)
+          (cons ":jit_compilations" jit-compile)
+          (cons ":jit_hotswap_invalidate" jit-hotswap)
+          (cons ":dirty_ratio_num" dirty-num)
+          (cons ":dirty_ratio_den" dirty-den)
+          (cons ":dirty_prop_to_ir" dirty-prop)
+          (cons ":hold_us_total" hold-us)
+          (cons ":node_count" nodes)
+          (cons ":def_count" defs))))
+
+(define (prom:cost-alist-ref key lst default)
+  (prom:alist-ref key lst default))
+
+; Pointwise numeric delta (after - before) for shared keys; missing → 0.
+(define (prom:cost-delta before after)
+  (let ((keys (list
+                ":generation" ":gen_bump_total" ":gen_current"
+                ":partial_relower_hits" ":full_fallbacks" ":impact_blocks"
+                ":blocks_relowered" ":jit_sync_count"
+                ":relower_instr_skip" ":relower_insts_saved"
+                ":relower_fallback_ok" ":relower_full_called"
+                ":cascade_full" ":cascade_body_only"
+                ":jit_partial_recompile" ":jit_cache_evictions"
+                ":jit_compilations" ":jit_hotswap_invalidate"
+                ":dirty_ratio_num" ":dirty_ratio_den"
+                ":dirty_prop_to_ir" ":hold_us_total"
+                ":node_count" ":def_count")))
+    (let loop ((ks keys) (acc (list)))
+      (if (null? ks)
+        acc
+        (let* ((k (car ks))
+               (a (prom:alist-ref k after 0))
+               (b (prom:alist-ref k before 0))
+               (d (if (and (number? a) (number? b)) (- a b) 0)))
+          (loop (cdr ks) (cons (cons k d) acc)))))))
+
+; Run continuous rebind under scale backdrop while collecting cost envelope.
+; Returns alist:
+;   :before :after :delta :continuous :elapsed_ms :rounds
+;   :avg_ms_per_round :incremental_active :dirty_observable :envelope_ok
+;
+; incremental_active: any of partial relower / blocks relowered / relower ok /
+;                     gen bump / dirty prop advanced during the run.
+; dirty_observable: dirty_ratio_den delta > 0 or after den > 0.
+; envelope_ok: continuous all_ok AND incremental_active AND dirty_observable
+;              AND full_fallbacks did not dominate partial (soft: full Δ ≤ partial Δ
+;              when partial Δ > 0; else full Δ is recorded only).
+(define (prom:incremental-envelope! rounds n-leaves sample-arg)
+  (let* ((before (prom:observe-cost!))
+         (t0 (monotonic-ms))
+         (cont (prom:continuous-rebind! rounds n-leaves sample-arg))
+         (t1 (monotonic-ms))
+         (after (prom:observe-cost!))
+         (delta (prom:cost-delta before after))
+         (elapsed
+           (if (and (number? t0) (number? t1) (>= (- t1 t0) 0))
+             (- t1 t0)
+             (prom:alist-ref ":elapsed_ms" cont 0)))
+         (avg (if (and (number? rounds) (> rounds 0) (number? elapsed))
+                (quotient elapsed rounds)
+                0))
+         (d-partial (prom:alist-ref ":partial_relower_hits" delta 0))
+         (d-full (prom:alist-ref ":full_fallbacks" delta 0))
+         (d-blocks (prom:alist-ref ":blocks_relowered" delta 0))
+         (d-relower-ok (prom:alist-ref ":relower_fallback_ok" delta 0))
+         (d-gen-bump (prom:alist-ref ":gen_bump_total" delta 0))
+         (d-gen (prom:alist-ref ":generation" delta 0))
+         (d-dirty-den (prom:alist-ref ":dirty_ratio_den" delta 0))
+         (d-dirty-prop (prom:alist-ref ":dirty_prop_to_ir" delta 0))
+         (d-skip (prom:alist-ref ":relower_instr_skip" delta 0))
+         (d-saved (prom:alist-ref ":relower_insts_saved" delta 0))
+         (incremental-active
+           (or (> d-partial 0)
+               (> d-blocks 0)
+               (> d-relower-ok 0)
+               (> d-gen-bump 0)
+               (> d-gen 0)
+               (> d-dirty-prop 0)
+               (> d-skip 0)
+               (> d-saved 0)))
+         (dirty-observable
+           (or (> d-dirty-den 0)
+               (> (prom:alist-ref ":dirty_ratio_den" after 0) 0)
+               (> d-dirty-prop 0)))
+         ; Prefer partial over full when both move; if only full moves, still
+         ; record activity but flag dominance.
+         (full-dominates
+           (and (> d-full 0)
+                (> d-partial 0)
+                (> d-full d-partial)))
+         (cont-ok (eq? (prom:alist-ref ":all_ok" cont #f) #t))
+         (envelope-ok
+           (and cont-ok incremental-active dirty-observable
+                (not full-dominates))))
+    (prom:stats-set! "last_elapsed_ms" elapsed)
+    (prom:stats-set! "last_generation" (prom:alist-ref ":generation" after 0))
+    (list (cons ":before" before)
+          (cons ":after" after)
+          (cons ":delta" delta)
+          (cons ":continuous" cont)
+          (cons ":elapsed_ms" elapsed)
+          (cons ":rounds" rounds)
+          (cons ":avg_ms_per_round" avg)
+          (cons ":incremental_active" incremental-active)
+          (cons ":dirty_observable" dirty-observable)
+          (cons ":full_dominates_partial" full-dominates)
+          (cons ":d_partial_relower" d-partial)
+          (cons ":d_full_fallbacks" d-full)
+          (cons ":d_gen_bump" d-gen-bump)
+          (cons ":d_relower_skip" d-skip)
+          (cons ":d_relower_saved" d-saved)
+          (cons ":d_dirty_den" d-dirty-den)
+          (cons ":envelope_ok" envelope-ok))))

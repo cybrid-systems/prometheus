@@ -73,11 +73,12 @@ Verify correctness + incremental envelope  →  Rollback (if needed)  →  next 
 
 ## Current phase goal
 
-**Phase 1–2 landed:**
+**Phase 1–3 landed:**
 - `01-minimal-scale` — large FlatAST construct + metrology (A+F, \(E=0\))
-- `02-continuous-mutate` — continuous typed rebind + poison/restore on scale backdrop (A+B+F, \(E=0\))
+- `02-continuous-mutate` — continuous typed rebind + poison/restore (A+B+F, \(E=0\))
+- `03-incremental-cost` — generation / partial relower / dirty ratio / latency envelope (A+B+C+F, \(E=0\))
 
-**Next:** Phase 3 incremental cost observability — dirty/cascade/generation/cache as decision-grade metrics (axis C).
+**Next:** Phase 4 LLM propose edge isolation (schema / wire / stub / live) — axes D+E.
 
 When generating code or probes, keep the denseness claim **testable** and the escape discipline **strict**.
 

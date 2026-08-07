@@ -6,7 +6,7 @@ Copy `_template` to start a new probe.
 |---|-------|------|--------|
 | 01 | [minimal-scale](01-minimal-scale/) | A F | landed |
 | 02 | [continuous-mutate](02-continuous-mutate/) | A B F | landed |
-| 03 | incremental cost / generation / cache | C F | planned |
+| 03 | [incremental-cost](03-incremental-cost/) | A B C F | landed |
 | 04 | LLM propose edge isolation | D E | planned |
 | 05 | scale soak + denseness judgment | A–F | planned |
 

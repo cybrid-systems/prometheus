@@ -7,6 +7,7 @@ cd "$ROOT"
 PROBES=(
   01-minimal-scale
   02-continuous-mutate
+  03-incremental-cost
 )
 
 pass=0

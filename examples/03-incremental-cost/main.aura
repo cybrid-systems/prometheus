@@ -1,0 +1,204 @@
+; examples/03-incremental-cost/main.aura
+;
+; Phase 3 denseness probe — incremental cost observability under continuous
+; rebind on a large FlatAST. Generation, partial relower, dirty ratio, and
+; per-round latency are first-class decision metrics.
+;
+; Axes: A (scale) + B (mutation) + C (incremental cost) + F (metrology)
+;
+; Loop coverage:
+;   Install scale+subject → Snapshot cost metrics → Continuous rebind →
+;   Snapshot again → Delta envelope → Validate correctness + observability
+;
+; Run: ./scripts/run-aura.sh examples/03-incremental-cost/main.aura
+
+(require "prometheus-min" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 03-incremental-cost: decision-grade incremental metrology ===")
+(newline)
+(display "prom:min-version=")
+(display prom:min-version)
+(display " cost-version=")
+(display prom:cost-version)
+(newline)
+
+(define N-LEAVES 100)
+(define ROUNDS 25)
+(define SAMPLE-ARG 7)
+(define MIN-NODES 500)
+(define WANT-DEFS (+ N-LEAVES 1))
+
+(display "knobs: n-leaves=")
+(display N-LEAVES)
+(display " rounds=")
+(display ROUNDS)
+(newline)
+
+; ── 1. Install scale backdrop + subject ──
+(let* ((installed (prom:install-scale-subject N-LEAVES))
+       (nc0 (prom:node-count))
+       (dc0 (prom:def-count))
+       (init-sample (prom:sample-subject SAMPLE-ARG))
+       (init-ok (and installed
+                     (prom:check-true installed)
+                     (prom:check-ge nc0 MIN-NODES)
+                     (prom:check-eq dc0 WANT-DEFS)
+                     (prom:check-eq init-sample (* SAMPLE-ARG 2))
+                     (prom:check-true (prom:leaves-intact? N-LEAVES)))))
+  (display "install: nodes=")
+  (display nc0)
+  (display " defs=")
+  (display dc0)
+  (display " subject(7)=")
+  (display init-sample)
+  (display " ok=")
+  (display init-ok)
+  (newline)
+
+  (if (not init-ok)
+    (begin
+      (display "FAIL: scale+subject install")
+      (newline)
+      (display "RESULT fail example=03-incremental-cost")
+      (newline))
+    (begin
+      ; ── 2. Incremental envelope under continuous rebind ──
+      (let* ((env (prom:incremental-envelope! ROUNDS N-LEAVES SAMPLE-ARG))
+             (cont (prom:alist-ref ":continuous" env (list)))
+             (delta (prom:alist-ref ":delta" env (list)))
+             (elapsed (prom:alist-ref ":elapsed_ms" env 0))
+             (avg (prom:alist-ref ":avg_ms_per_round" env 0))
+             (inc-active (prom:alist-ref ":incremental_active" env #f))
+             (dirty-obs (prom:alist-ref ":dirty_observable" env #f))
+             (full-dom (prom:alist-ref ":full_dominates_partial" env #f))
+             (envelope-ok (prom:alist-ref ":envelope_ok" env #f))
+             (d-partial (prom:alist-ref ":d_partial_relower" env 0))
+             (d-full (prom:alist-ref ":d_full_fallbacks" env 0))
+             (d-gen (prom:alist-ref ":d_gen_bump" env 0))
+             (d-skip (prom:alist-ref ":d_relower_skip" env 0))
+             (d-saved (prom:alist-ref ":d_relower_saved" env 0))
+             (d-dirty (prom:alist-ref ":d_dirty_den" env 0))
+             (okc (prom:alist-ref ":ok_count" cont 0))
+             (failc (prom:alist-ref ":fail_count" cont 0))
+             (gen-after (prom:alist-ref ":generation"
+                          (prom:alist-ref ":after" env (list)) 0)))
+        (display "continuous: ok=")
+        (display okc)
+        (display " fail=")
+        (display failc)
+        (display " elapsed_ms=")
+        (display elapsed)
+        (display " avg_ms/round=")
+        (display avg)
+        (newline)
+
+        (display "cost delta: ")
+        (write delta)
+        (newline)
+
+        (display "envelope: incremental_active=")
+        (display inc-active)
+        (display " dirty_observable=")
+        (display dirty-obs)
+        (display " full_dominates_partial=")
+        (display full-dom)
+        (display " envelope_ok=")
+        (display envelope-ok)
+        (newline)
+
+        (display "highlights: d_partial=")
+        (display d-partial)
+        (display " d_full=")
+        (display d-full)
+        (display " d_gen_bump=")
+        (display d-gen)
+        (display " d_relower_skip=")
+        (display d-skip)
+        (display " d_insts_saved=")
+        (display d-saved)
+        (display " d_dirty_den=")
+        (display d-dirty)
+        (display " gen_after=")
+        (display gen-after)
+        (newline)
+
+        ; ── 3. Gates ──
+        (let* ((cont-check (and (prom:check-eq okc ROUNDS)
+                                (prom:check-eq failc 0)))
+               (inc-check (prom:check-true inc-active))
+               (dirty-check (prom:check-true dirty-obs))
+               (env-check (prom:check-true envelope-ok))
+               (gen-check (prom:check-ge d-gen 1))
+               ; partial or skip/saved activity shows incremental path used
+               (partial-check
+                 (prom:check-true (or (> d-partial 0)
+                                      (> d-skip 0)
+                                      (> d-saved 0)
+                                      (> d-gen 0))))
+               (no-full-dom (prom:check-true (not full-dom)))
+               (v-nodes (prom:check-true (prom:validate-nodes-pass?)))
+               (v-own (prom:check-true (prom:validate-ownership-pass?)))
+               (esc-ok (prom:check-eq (prom:stats-ref "escapes") 0)))
+          (display "gates: cont=")
+          (display cont-check)
+          (display " inc=")
+          (display inc-check)
+          (display " dirty=")
+          (display dirty-check)
+          (display " env=")
+          (display env-check)
+          (display " gen=")
+          (display gen-check)
+          (display " partial-path=")
+          (display partial-check)
+          (display " no-full-dom=")
+          (display no-full-dom)
+          (display " validate=")
+          (display v-nodes)
+          (display "/")
+          (display v-own)
+          (newline)
+
+          (display "stats: ")
+          (write (prom:stats-alist))
+          (newline)
+
+          (let ((all-ok
+                  (and init-ok cont-check inc-check dirty-check env-check
+                       gen-check partial-check no-full-dom
+                       v-nodes v-own esc-ok
+                       (= (prom:stats-ref "correctness_fail") 0)
+                       (= (prom:stats-ref "escapes") 0))))
+            (if all-ok
+              (begin
+                (display "PASS: incremental cost envelope decision-grade (escapes=0)")
+                (newline)
+                (display "RESULT pass example=03-incremental-cost escapes=0 rounds=")
+                (display ROUNDS)
+                (display " elapsed_ms=")
+                (display elapsed)
+                (display " avg_ms=")
+                (display avg)
+                (display " d_partial=")
+                (display d-partial)
+                (display " d_gen_bump=")
+                (display d-gen)
+                (newline))
+              (begin
+                (display "FAIL: incremental cost denseness probe")
+                (newline)
+                (display "RESULT fail example=03-incremental-cost")
+                (newline)
+                (display "  init=")
+                (display init-ok)
+                (display " cont=")
+                (display cont-check)
+                (display " envelope=")
+                (display env-check)
+                (display " full_dom=")
+                (display full-dom)
+                (display " escapes=")
+                (display (prom:stats-ref "escapes"))
+                (newline)))))))))
