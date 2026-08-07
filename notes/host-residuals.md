@@ -3,53 +3,66 @@
 Track host or packaging limitations that force workarounds.
 These are **not** counted as denseness failures on \(S_{\mathrm{Prometheus}}\).
 
+Upstream tracking (cybrid-systems/aura):
+
+| Residual | Aura issue |
+|----------|------------|
+| H1 cross-define after set-code | [#2732](https://github.com/cybrid-systems/aura/issues/2732) |
+| H2 count-only node metric | [#2733](https://github.com/cybrid-systems/aura/issues/2733) |
+| H3 post-rebind top-level sample stale | [#2734](https://github.com/cybrid-systems/aura/issues/2734) |
+| H4 aura-llm-call recursion after heavy require | [#2735](https://github.com/cybrid-systems/aura/issues/2735) |
+| set!/top-level define after set-code | [#2736](https://github.com/cybrid-systems/aura/issues/2736) |
+| ast:* stats surface / pipeline docs | [#2737](https://github.com/cybrid-systems/aura/issues/2737) |
+
 ---
 
 ## H1 — Cross-define call chains after `set-code` may mis-evaluate (2026-08-07)
 
-**Symptom:** After `(set-code …)` + `(eval-current)` of multiple interdependent defines, some call chains return the argument (or apply only one layer) instead of the nested result. Example shapes that failed in exploratory runs:
+**Upstream:** [aura#2732](https://github.com/cybrid-systems/aura/issues/2732)
 
-- `(define (h x) (g (g x)))` with `(define (g x) (+ x 42))` → `h(1)` sometimes `43` not `85`
-- `(define (wrap x) (leaf x))` with constant `leaf` → returned `x` not leaf result
+**Symptom:** After `(set-code …)` + `(eval-current)` of multiple interdependent defines, some call chains return the argument (or apply only one layer) instead of the nested result.
 
-Independent leaf defines `(define (f{i} x) (+ x i))` and a single deep nested expression under one binding evaluate correctly.
+**Workaround:** independent leaves + single deep nest; mutation via single named lambda rebind (Aether pattern).
 
-**Workaround in Prometheus Phase 1:** scale subject uses independent leaves + one deep nest (no cross-define call graph). Continuous-mutation probes should prefer `mutate:rebind` on single named subjects (Aether pattern) until this is fixed or fully characterized upstream.
-
-**Impact:** probe design constraint, not denseness failure — evolvable core still pure Aura.
-
-**Status:** open host residual; not logged as escape.
+**Status:** open; filed upstream.
 
 ---
 
 ## H2 — Full `ast:nodes` list for node count (noted, not blocking)
 
-**Symptom:** Node count is `(length (stats:get "ast:nodes"))`, which materializes all node ids. Fine at ~1–3k nodes (Phase 1); may become expensive or memory-heavy at 1e5+.
+**Upstream:** [aura#2733](https://github.com/cybrid-systems/aura/issues/2733)
 
-**Future:** prefer a count-only host primitive if/when scale soak hits this; until then treat as potential Axis E measurement, not a denseness collapse.
+**Symptom:** Node count is `(length (stats:get "ast:nodes"))`. Fine at ~1–3k; expensive at 1e5+.
 
-**Status:** deferred.
+**Status:** deferred; enhancement filed.
 
 ---
 
 ## H3 — Top-level `subject` sample after rebind can be stale (2026-08-07)
 
-**Symptom:** After `mutate:rebind` + `eval-current` on a multi-define workspace, calling `(subject n)` from a *subsequent top-level form* (stdin script REPL style) often returns the identity value (`n`) instead of the rebound body result. The **same** sample taken inside the continuous `while` body that performed rebind+eval is correct (closed forms `*3` / `*5` / `*99` all match).
+**Upstream:** [aura#2734](https://github.com/cybrid-systems/aura/issues/2734)
 
-**Workaround:** Phase 2 helpers (`prom:continuous-rebind!`, `prom:poison-restore!`) perform correctness samples inside the while compilation unit. Probes must not rely solely on post-loop top-level samples for denseness gates.
+**Symptom:** After `mutate:rebind` + `eval-current`, top-level `(subject n)` often identity/stale; in-`while` sample correct.
 
-**Impact:** probe structure constraint; not a denseness failure — continuous path is pure Aura and verifies correctly in-loop.
+**Workaround:** sample inside continuous while / module helpers; literals for knobs after set-code.
 
-**Status:** open host residual; not logged as escape.
+**Status:** open; filed upstream.
 
 ---
 
 ## H4 — `aura-llm-call` recursion after heavy module load (2026-08-07)
 
-**Symptom:** After `(require "prometheus-min" all:)` (or other heavy loads), `(aura-llm-call …)` / `llm:chat` can hit `recursion depth exceeded (>700)` or fail in a few ms with empty body. Standalone `(require "std/llm")` works. Also free-vars can break after `set-code`.
+**Upstream:** [aura#2735](https://github.com/cybrid-systems/aura/issues/2735)
 
-**Workaround:** Live denseness harness uses **curl** (`scripts/live-chat.sh`) for HTTPS, passes wire via `PROMETHEUS_LLM_WIRE`, and runs schema/execute in Aura. Probe `05-live-propose` is opt-in via `scripts/compare-live-llms.sh`.
+**Symptom:** After heavy `require` (e.g. prometheus-min), in-process `llm:chat` / `aura-llm-call` can recurse (>700) or empty-fail in ms.
 
-**Impact:** product live edge uses shell bridge for HTTP; core denseness path remains pure Aura.
+**Workaround:** curl harness (`scripts/live-chat.sh`) + `PROMETHEUS_LLM_WIRE`.
 
-**Status:** open host residual; edge \(E\) still metered.
+**Status:** open; filed upstream.
+
+---
+
+## Related (filed together)
+
+- [aura#2736](https://github.com/cybrid-systems/aura/issues/2736) — `set!` on let locals / top-level define stale / while spin after set-code  
+- [aura#2737](https://github.com/cybrid-systems/aura/issues/2737) — `ast:*` via stats:get vs prims; pipeline strict documentation  
