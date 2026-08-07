@@ -1,0 +1,5 @@
+# Local / host
+*.log
+.DS_Store
+/tmp/
+notes/last-run-report.md

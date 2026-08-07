@@ -1,0 +1,15 @@
+name: denseness
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  structure:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check structure
+        run: bash scripts/check-structure.sh

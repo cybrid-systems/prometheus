@@ -1,0 +1,4 @@
+;; Prometheus probe template
+;; Replace with a real denseness claim.
+
+(display "PROMETHEUS: template — replace with real probe\n")
