@@ -3,7 +3,8 @@
 **Date:** 2026-08-07  
 **Host:** Aura (local `aura-grok`)  
 **Surface:** measure · scale · mutate · cost · llm  
-**Status:** Phase 1–4 probes landed; denseness judgment **partial** (A–F except soak)
+**Status:** Phase 1–5 complete  
+**Judgment:** on scoped \(S_{\mathrm{Prometheus}}\), \(V_A\) is **practically dense** for the evolvable / editable core, with controlled metered edge \(E\).
 
 ---
 
@@ -15,34 +16,20 @@ On \(S_{\mathrm{Prometheus}}\) (large-scale FlatAST under continuous LLM-driven 
 P \approx A \oplus E,\quad A \in V_A
 \]
 
----
-
-## Live LLM API?
-
-**Not required for denseness Phase 1–4.**
-
-| Path | Role | Core \(E\) | Edge \(E\) |
-|------|------|------------|------------|
-| rule propose | pure-Aura policy | 0 | 0 |
-| schema refuse | gate before rebind | 0 | 0 |
-| wire parse (sim text) | external text → schema | 0 | ≥1 metered |
-| stub propose | simulated LLM edge | 0 | ≥1 metered |
-| live HTTPS | optional product pressure | 0 | ≥1 if used |
-
-Offline suite proves the **isolation architecture**. Live MiniMax/OpenAI-style calls are opt-in (`PROMETHEUS_LLM_PROPOSE=live` + `LLM_API_KEY`), same posture as Aether 09.
+Prometheus does **not** claim denseness over all of \(S_{\mathrm{practical}}\).
 
 ---
 
 ## Axis coverage
 
-| Axis | Evidence |
-|------|----------|
-| **A** Scale | 01–04 |
-| **B** Continuous mutation | 02–04 |
-| **C** Incremental cost | 03 |
-| **D** LLM interaction surface | **04** — schema + wire + stub + prompt |
-| **E** Scale / world boundary | **04** — edge escape metering; live optional |
-| **F** Metrology | 01–04 |
+| Axis | Question | Evidence |
+|------|----------|----------|
+| **A** Scale completeness | Large FlatAST mostly in \(V_A\)? | **01**, **06–08** — up to ~1.4k nodes under soak |
+| **B** Continuous mutation | High-frequency typed mutate still correct? | **02**, **06–08** — 25/50/**100**/100 rebind rounds |
+| **C** Incremental performance | Cascade / re-lower decision-grade? | **03**, **06–08** — partial relower, gen bump, latency |
+| **D** LLM interaction surface | query + mutate + workspace dense enough? | **04** schema/wire/stub; **05** live MiniMax + DeepSeek |
+| **E** Scale / world boundary | Escapes isolated & metered? | **04–05** edge \(E\); core soak \(E=0\) |
+| **F** Metrology | Escape rate, cost, dual rollback | all probes + stats alists |
 
 ---
 
@@ -50,39 +37,51 @@ Offline suite proves the **isolation architecture**. Live MiniMax/OpenAI-style c
 
 | Probe | Axes | Result | Core \(E\) | Edge \(E\) |
 |-------|------|--------|------------|------------|
-| [01](../examples/01-minimal-scale/) | A F | **PASS** | 0 | 0 |
-| [02](../examples/02-continuous-mutate/) | A B F | **PASS** | 0 | 0 |
-| [03](../examples/03-incremental-cost/) | A B C F | **PASS** | 0 | 0 |
-| [04](../examples/04-propose-edge/) | A B D E F | **PASS** (rule/schema/wire/stub) | 0 | ≥1 (stub/wire) |
-| [05](../examples/05-live-propose/) | A B D E F | **PASS** live MiniMax-M3 + deepseek-v4-flash *(manual harness)* | 0 | ≥1 HTTPS |
+| [01-minimal-scale](../examples/01-minimal-scale/) | A F | **PASS** ~1444 nodes | 0 | 0 |
+| [02-continuous-mutate](../examples/02-continuous-mutate/) | A B F | **PASS** 30 rounds + poison/restore | 0 | 0 |
+| [03-incremental-cost](../examples/03-incremental-cost/) | A B C F | **PASS** envelope decision-grade | 0 | 0 |
+| [04-propose-edge](../examples/04-propose-edge/) | A B D E F | **PASS** rule/schema/wire/stub | 0 | ≥1 stub/wire |
+| [05-live-propose](../examples/05-live-propose/) | A B D E F | **PASS** MiniMax-M3 + deepseek-v4-flash *(opt-in)* | 0 | ≥1 HTTPS |
+| [06-scale-soak](../examples/06-scale-soak/) | A B C F | **PASS** N=25, avg ~28ms/round | 0 | 0 |
+| [07-long-n-50](../examples/07-long-n-50/) | A B C F | **PASS** N=50, avg ~44ms/round | 0 | 0 |
+| [08-long-n-100](../examples/08-long-n-100/) | A B C F | **PASS** N=100, avg ~105ms/round | 0 | 0 |
 
-### 04 narrative
+### Soak ladder
 
-- Rule auto-triple from double → commit, `escapes=0`  
-- Schema refuse: bad kind, `rm -rf` body, wrong name `f0`  
-- Wire: good `MUTATE|subject|*5` commits; garbage parse-fail; hack body refuse  
-- Stub: `source=llm-stub`, edge escape bumped, subject still verifies  
-- `live_required=no`  
+| Rung | Leaves | Rounds | elapsed_ms | avg_ms | Core \(E\) |
+|------|--------|--------|------------|--------|------------|
+| 06 | 100 | 25 | ~700 | ~28 | 0 |
+| 07 | 120 | 50 | ~2200 | ~44 | 0 |
+| 08 | 150 | 100 | ~10600 | ~105 | 0 |
 
-### 05 live comparison (2026-08-07)
+All rungs: continuous closed-form verify, incremental envelope active, poison+restore, validate nodes/ownership, **escapes=0**.
 
-Harness: `./scripts/compare-live-llms.sh` (curl HTTPS → schema/execute on scale FlatAST).  
-Keys: `~/code/keys/minimax`, `~/code/keys/deepseek`.
+### Live propose (opt-in)
 
-| Provider | Model | chat_ms | Wire | Exec | Core |
-|----------|-------|---------|------|------|------|
-| MiniMax | MiniMax-M3 | ~3.9s | `MUTATE\|subject\|(* x 3)\|…` | commit got=21 | leaves+validate ok, \(E_{edge}≥1\) |
-| DeepSeek | deepseek-v4-flash | ~2.4s | same shape | commit got=21 | same |
+| Provider | Model | chat_ms | Result |
+|----------|-------|---------|--------|
+| MiniMax | MiniMax-M3 | ~3.9s | PASS commit got=21 |
+| DeepSeek | deepseek-v4-flash | ~2.4s | PASS commit got=21 |
 
-Both **PASS** denseness isolation (parsed `llm-live`, schema valid, rebind verified). DeepSeek slightly faster on this prompt; MiniMax needs few-shot / repair for field-2=`subject` discipline under thinking models.
-
-HTTP is out-of-process (H4); evolvable core stays pure Aura.
+HTTPS via curl harness (H4); schema/execute pure Aura.
 
 ---
 
 ## Judgment
 
-**Partial / near-complete on scoped paths.** Axes A–F each have constructive evidence with **core \(E=0\)**. Live propose pressure tested on MiniMax-M3 and deepseek-v4-flash. Remaining: multi-N soak + formal denseness close-out (Phase 5).
+> On scoped \(S_{\mathrm{Prometheus}}\), \(V_A\) is **practically dense** for the evolvable / editable core.  
+> Scale FlatAST construction, continuous typed rebind through **N=100**, decision-grade incremental metrology, propose-edge isolation (offline + live), and dual rollback all hold with **core \(E=0\)**.  
+> World / LLM edges are **metered and schema-gated**.
+
+Constructive denseness only — not a proof over all large-program editors or hard realtime IDEs.
+
+### Failure modes checked
+
+| Pre-declared failure | Status |
+|----------------------|--------|
+| Continuous edit requires unguarded external AST tools | **Not observed** on core path |
+| Mutation at scale breaks dirty / correctness | **Not observed** through N=100 |
+| Incremental perf only by abandoning observability | **Not observed** — envelope first-class |
 
 ---
 
@@ -90,5 +89,7 @@ HTTP is out-of-process (H4); evolvable core stays pure Aura.
 
 ```bash
 ./scripts/check-structure.sh
-./scripts/run-all.sh   # offline; no API key
+./scripts/run-all.sh              # offline 01–04, 06–08
+./scripts/overnight-scale.sh      # soak ladder only
+./scripts/compare-live-llms.sh    # opt-in live MiniMax + DeepSeek
 ```

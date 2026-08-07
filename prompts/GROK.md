@@ -73,19 +73,17 @@ Verify correctness + incremental envelope  →  Rollback (if needed)  →  next 
 
 ## Current phase goal
 
-**Phase 1–4 landed:**
-- `01-minimal-scale` — scale FlatAST + metrology (A+F)
-- `02-continuous-mutate` — continuous rebind + poison/restore (A+B+F)
-- `03-incremental-cost` — incremental cost envelope (A+B+C+F)
-- `04-propose-edge` — schema/wire/stub propose isolation (A+B+D+E+F); **live API not required**
+**Denseness judgment complete (scoped \(S_{\mathrm{Prometheus}}\)):**
+- Probes **01–08** (05 live opt-in); soak ladder N=25/50/**100**, core \(E=0\)
+- Report: `notes/denseness-report.md` — **practically dense** on evolvable core
 
-**Next:** Phase 5 scale soak + denseness judgment write-up.
+**Follow-ons (optional):** larger soak, multi-region workspace, count-only `ast:nodes` (H2), fix H4 in-process LLM.
 
 When generating code or probes, keep the denseness claim **testable** and the escape discipline **strict**.
 
-**Host residuals to respect:** H1 (no cross-define call chains after set-code), H3 (sample rebind results inside continuous while, not only top-level after).
+**Host residuals:** H1 cross-define after set-code; H3 top-level sample stale; H4 `aura-llm-call` recursion after heavy load (use curl harness for live).
 
-**LLM:** default `PROMETHEUS_LLM_PROPOSE=rule`. Stub meters edge \(E\). Live is opt-in only.
+**LLM:** default rule/stub offline. Live: `./scripts/compare-live-llms.sh`.
 
 ### After generating
 

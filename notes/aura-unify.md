@@ -107,7 +107,7 @@ Unify 不是单仓独白，而是 **基 + 多个 denseness span**：
 S_practical
 ├── S_Aether       # 反思 · 安全 mutation · Agent 编排     [Aether — denseness 已判]
 ├── S_Hephaestus   # 热路径 · 内核 · 所有权 · 性能观测     [Hephaestus — denseness 已判]
-└── S_Prometheus   # 大规模 AST · 增量编译 · 持续 LLM 编辑  [Prometheus — Phase 1–4 探针已落地]
+└── S_Prometheus   # 大规模 AST · 增量编译 · 持续 LLM 编辑  [Prometheus — practically dense, soak N=100]
 ```
 
 每个 span 只声称：

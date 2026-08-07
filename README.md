@@ -155,11 +155,11 @@ prometheus/
 
 | Phase | Focus | Status |
 |-------|--------|--------|
-| **1** | Minimal large-AST construction + baseline metrology | **landed** (`01-minimal-scale`) |
-| **2** | Continuous typed mutation + dirty cascade under controlled load | **landed** (`02-continuous-mutate`) |
-| **3** | Incremental cost observability + generation / cache behavior | **landed** (`03-incremental-cost`) |
-| **4** | LLM propose edge (schema / wire / stub; live opt-in) | **landed** (`04-propose-edge`) |
-| **5** | Scale soak + denseness judgment | planned |
+| **1** | Minimal large-AST construction + baseline metrology | **landed** (`01`) |
+| **2** | Continuous typed mutation + dirty cascade under controlled load | **landed** (`02`) |
+| **3** | Incremental cost observability + generation / cache behavior | **landed** (`03`) |
+| **4** | LLM propose edge (schema / wire / stub; live opt-in) | **landed** (`04`–`05`) |
+| **5** | Scale soak + denseness judgment | **landed** (`06`–`08`, report complete) |
 
 ## Escape discipline
 
@@ -178,13 +178,13 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus)
 
 ## Status
 
-**Phase 1–4 landed.** Scale + continuous rebind + incremental cost + propose-edge isolation pass with core \(E=0\). **Live LLM API is not required** for denseness (rule/schema/wire/stub offline). Soak judgment (Phase 5) remains open.
+**Denseness complete (scoped).** On \(S_{\mathrm{Prometheus}}\), \(V_A\) is **practically dense** for the evolvable core (soak through N=100, core \(E=0\)). Live LLM is opt-in only.
 
 ```bash
-./scripts/check-structure.sh    # no binary required
-./scripts/run-all.sh            # offline; no API key
-# optional live propose pressure:
-# PROMETHEUS_LLM_PROPOSE=live LLM_API_KEY=... ./scripts/run-aura.sh examples/04-propose-edge/main.aura
+./scripts/check-structure.sh
+./scripts/run-all.sh                 # offline 01–04, 06–08
+./scripts/overnight-scale.sh         # soak ladder
+./scripts/compare-live-llms.sh       # MiniMax-M3 + deepseek-v4-flash
 ```
 
 Prometheus continues Aura Unify’s constructive measurement program after Aether’s agent-loop and Hephaestus’ performance denseness results — pressure-testing the same basis on the large-scale continuous AST mutation + incremental compilation subspace.
