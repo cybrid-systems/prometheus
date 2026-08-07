@@ -45,6 +45,8 @@ Prometheus does **not** claim denseness over all of \(S_{\mathrm{practical}}\).
 | [06-scale-soak](../examples/06-scale-soak/) | A B C F | **PASS** N=25, avg ~28ms/round | 0 | 0 |
 | [07-long-n-50](../examples/07-long-n-50/) | A B C F | **PASS** N=50, avg ~44ms/round | 0 | 0 |
 | [08-long-n-100](../examples/08-long-n-100/) | A B C F | **PASS** N=100, avg ~105ms/round | 0 | 0 |
+| [09-propose-under-soak](../examples/09-propose-under-soak/) | A B D F | **PASS** rule propose × 20 soak rounds | 0 | 0 |
+| [10-dual-subject](../examples/10-dual-subject/) | A B F | **PASS** dual-name isolation + 16 alt rebinds | 0 | 0 |
 
 ### Soak ladder
 
@@ -70,7 +72,7 @@ HTTPS via curl harness (H4); schema/execute pure Aura.
 ## Judgment
 
 > On scoped \(S_{\mathrm{Prometheus}}\), \(V_A\) is **practically dense** for the evolvable / editable core.  
-> Scale FlatAST construction, continuous typed rebind through **N=100**, decision-grade incremental metrology, propose-edge isolation (offline + live), and dual rollback all hold with **core \(E=0\)**.  
+> Scale FlatAST construction, continuous typed rebind through **N=100**, dual-subject isolation, propose-under-soak, decision-grade incremental metrology, propose-edge isolation (offline + live), and dual rollback all hold with **core \(E=0\)**.  
 > World / LLM edges are **metered and schema-gated**.
 
 Constructive denseness only — not a proof over all large-program editors or hard realtime IDEs.

@@ -16,6 +16,7 @@
         prom:restore
         prom:rebind-safe
         prom:rebind-live
+        prom:rebind-apply
         prom:build-subject-src
         prom:install-scale-subject
         prom:body-scale
@@ -24,7 +25,8 @@
         prom:leaves-intact?
         prom:continuous-rebind!
         prom:poison-restore!
-        prom:mutation-total)
+        prom:mutation-total
+        prom:dual-subject-soak!)
 
 (require "prometheus-measure" all:)
 (require "prometheus-scale" all:)
@@ -54,8 +56,32 @@
       (catch (e) #f))
     #f))
 
+; Apply rebind without sampling (for dual-name subjects).
+; Returns alist: :ok :mut-ok :reason
+(define (prom:rebind-apply name body summary)
+  (if (not (prom:safety-ok?))
+    (list (cons ":ok" #f)
+          (cons ":mut-ok" #f)
+          (cons ":reason" "boundary-or-quota"))
+    (begin
+      (try (mutate:safe-yield) (catch (e) #f))
+      (let ((mut-res (try (mutate:rebind name body summary) (catch (e) #f))))
+        (if (eq? mut-res #t)
+          (begin
+            (try (eval-current) (catch (e) #f))
+            (prom:stats-bump! "mut_ok")
+            (list (cons ":ok" #t)
+                  (cons ":mut-ok" #t)
+                  (cons ":reason" "applied")))
+          (begin
+            (prom:stats-bump! "mut_fail")
+            (list (cons ":ok" #f)
+                  (cons ":mut-ok" #f)
+                  (cons ":reason" "rebind-failed"))))))))
+
 ; Live rebind without pre-snapshot (fast path for continuous rounds).
 ; Returns alist: :ok :mut-ok :reason :got (sample of subject at arg)
+; Note: samples the binding named `subject` only; dual names use rebind-apply.
 (define (prom:rebind-live name body summary sample-arg)
   (if (not (prom:safety-ok?))
     (list (cons ":ok" #f)
@@ -275,3 +301,74 @@
         (prom:stats-set! "last_mut_total" (if (number? n) n 0))
         (if (number? n) n 0)))
     (catch (e) 0)))
+
+; Dual-subject isolation + soak (module free-vars survive set-code).
+; Assumes subject-a / subject-b already installed. Returns alist including
+; :iso_a_ok :iso_b_ok isolation spot-checks then alternating soak.
+(define (prom:dual-subject-soak! rounds sample-arg n-leaves)
+  (let ((body2 "(lambda (x) (* x 2))")
+        (body3 "(lambda (x) (* x 3))")
+        (body5 "(lambda (x) (* x 5))")
+        (ctr (make-vector 3 0))
+        (t0 (monotonic-ms)))
+    ; ctr[0]=i ctr[1]=okc ctr[2]=failc  (vector-set! survives where set! may not)
+    ; prime both to double
+    (prom:rebind-apply "subject-a" body2 "prime-a")
+    (prom:rebind-apply "subject-b" body2 "prime-b")
+    ; isolation A
+    (prom:rebind-apply "subject-a" body3 "iso-a")
+    (let* ((ga (try (subject-a sample-arg) (catch (e) -1)))
+           (gb (try (subject-b sample-arg) (catch (e) -1)))
+           (iso-a (and (= ga (* sample-arg 3)) (= gb (* sample-arg 2)))))
+      ; isolation B
+      (prom:rebind-apply "subject-b" body5 "iso-b")
+      (let* ((ga2 (try (subject-a sample-arg) (catch (e) -1)))
+             (gb2 (try (subject-b sample-arg) (catch (e) -1)))
+             (iso-b (and (= ga2 (* sample-arg 3)) (= gb2 (* sample-arg 5)))))
+        ; alternating soak with vector counters
+        (while (lambda () (< (vector-ref ctr 0) rounds))
+          (lambda ()
+            (let* ((i (vector-ref ctr 0))
+                   (target-a? (= (modulo i 2) 0))
+                   (name (if target-a? "subject-a" "subject-b"))
+                   (body (if (= (modulo i 4) 0) body3
+                           (if (= (modulo i 4) 1) body5
+                             (if (= (modulo i 4) 2) body2 body3))))
+                   (fac (if (equal? body body2) 2
+                          (if (equal? body body3) 3 5)))
+                   (want (* sample-arg fac))
+                   (r (prom:rebind-apply name body
+                        (string-append "dual-" (number->string i))))
+                   (ga (try (subject-a sample-arg) (catch (e) -1)))
+                   (gb (try (subject-b sample-arg) (catch (e) -1)))
+                   (got (if target-a? ga gb))
+                   (other (if target-a? gb ga))
+                   (other-ok (or (= other (* sample-arg 2))
+                                 (= other (* sample-arg 3))
+                                 (= other (* sample-arg 5))))
+                   (round-ok (and (eq? (prom:alist-ref ":ok" r #f) #t)
+                                  (= got want)
+                                  other-ok
+                                  (prom:leaves-intact? n-leaves))))
+              (if round-ok
+                (begin
+                  (vector-set! ctr 1 (+ 1 (vector-ref ctr 1)))
+                  (prom:stats-bump! "correctness_ok"))
+                (begin
+                  (vector-set! ctr 2 (+ 1 (vector-ref ctr 2)))
+                  (prom:stats-bump! "correctness_fail")))
+              (vector-set! ctr 0 (+ 1 i)))))
+        (let* ((t1 (monotonic-ms))
+               (elapsed (if (and (number? t0) (number? t1) (>= (- t1 t0) 0))
+                          (- t1 t0)
+                          0))
+               (okc (vector-ref ctr 1))
+               (failc (vector-ref ctr 2)))
+          (list (cons ":iso_a_ok" iso-a)
+                (cons ":iso_b_ok" iso-b)
+                (cons ":ok_count" okc)
+                (cons ":fail_count" failc)
+                (cons ":rounds" rounds)
+                (cons ":elapsed_ms" elapsed)
+                (cons ":all_ok"
+                      (and iso-a iso-b (= failc 0) (= okc rounds)))))))))

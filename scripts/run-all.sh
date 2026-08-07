@@ -12,6 +12,8 @@ PROBES=(
   06-scale-soak
   07-long-n-50
   08-long-n-100
+  09-propose-under-soak
+  10-dual-subject
 )
 
 pass=0

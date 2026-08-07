@@ -11,18 +11,19 @@
         prom:scale-version prom:mutate-version prom:cost-version
         prom:llm-version prom:min-version
         prom:build-leaves-src prom:build-deep-src prom:build-scale-src
+        prom:build-dual-subject-src prom:install-dual-subjects
         prom:install-source
         prom:node-count prom:def-count prom:generation
         prom:validate-nodes-pass? prom:validate-ownership-pass?
         prom:scale-snapshot
         prom:observe-flatast! prom:install-and-observe
         prom:safety-ok? prom:snapshot prom:restore
-        prom:rebind-safe prom:rebind-live
+        prom:rebind-safe prom:rebind-live prom:rebind-apply
         prom:build-subject-src prom:install-scale-subject
         prom:body-scale prom:want-scale
         prom:sample-subject prom:leaves-intact?
         prom:continuous-rebind! prom:poison-restore!
-        prom:mutation-total
+        prom:mutation-total prom:dual-subject-soak!
         prom:hash-num prom:stats-num prom:engine-group-num
         prom:observe-cost! prom:cost-delta prom:cost-alist-ref
         prom:incremental-envelope!

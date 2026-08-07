@@ -1,0 +1,120 @@
+; examples/09-propose-under-soak/main.aura
+;
+; Denseness pressure: rule propose edge under multi-round scale soak.
+; Axes: A B D F (core E=0; rule propose has no edge escape).
+;
+; Each round: observe → rule propose (auto/triple/quint) → schema execute →
+; leaves intact. Final poison path refused by schema or restore.
+;
+; Run: ./scripts/run-aura.sh examples/09-propose-under-soak/main.aura
+
+(require "prometheus-min" all:)
+(require "prometheus-llm" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 09-propose-under-soak: rule propose × scale soak ===")
+(newline)
+
+(define N-LEAVES 80)
+(define ROUNDS 20)
+(define SAMPLE-ARG 7)
+
+(let* ((installed (prom:install-scale-subject N-LEAVES))
+       (nc (prom:node-count))
+       (init-ok (and installed (>= nc 400)
+                     (= (prom:def-count) (+ N-LEAVES 1)))))
+  (display "install ok=")
+  (display init-ok)
+  (display " nodes=")
+  (display nc)
+  (newline)
+
+  (if (not init-ok)
+    (begin
+      (display "FAIL: install")
+      (newline)
+      (display "RESULT fail example=09-propose-under-soak")
+      (newline))
+    (begin
+      (define i 0)
+      (define okc 0)
+      (define failc 0)
+      (define t0 (monotonic-ms))
+      ; Round 0: force to double via rule double, then auto-triple
+      (while (lambda () (< i ROUNDS))
+        (lambda ()
+          (let* ((mode (cond ((= (modulo i 3) 0) "triple")
+                             ((= (modulo i 3) 1) "quint")
+                             (else "auto")))
+                 ; sample inside while (H3)
+                 (cur (try (subject SAMPLE-ARG) (catch (e) -1)))
+                 (p (prom:propose-rule mode cur SAMPLE-ARG))
+                 (src-ok (equal? (prom:proposal-source p) "rule"))
+                 (r (prom:execute-proposal p SAMPLE-ARG N-LEAVES))
+                 (dec (prom:alist-ref ":decision" r #f))
+                 (dec-ok (or (eq? dec 'commit) (eq? dec 'skip)
+                             (equal? dec "commit") (equal? dec "skip")))
+                 (leaves (prom:leaves-intact? N-LEAVES))
+                 (round-ok (and src-ok (prom:proposal-valid? p) dec-ok leaves
+                                (= (prom:stats-ref "escapes") 0))))
+            (prom:stats-bump! "mut_rounds")
+            (if round-ok
+              (begin (set! okc (+ okc 1)) (prom:stats-bump! "correctness_ok"))
+              (begin (set! failc (+ failc 1)) (prom:stats-bump! "correctness_fail")))
+            (set! i (+ i 1)))))
+      (define t1 (monotonic-ms))
+      (define elapsed
+        (if (and (number? t0) (number? t1) (>= (- t1 t0) 0)) (- t1 t0) 0))
+
+      ; Schema refuse under soak pressure
+      (define p-bad (list "mutate" "f0" prom:body-triple "evil" "adversary"))
+      (define r-bad (prom:execute-proposal p-bad SAMPLE-ARG N-LEAVES))
+      (define refuse-ok
+        (and (not (prom:proposal-valid? p-bad))
+             (or (eq? (prom:alist-ref ":decision" r-bad #f) 'refuse)
+                 (equal? (prom:alist-ref ":decision" r-bad #f) "refuse"))))
+
+      (display "soak propose: ok=")
+      (display okc)
+      (display " fail=")
+      (display failc)
+      (display " elapsed_ms=")
+      (display elapsed)
+      (newline)
+      (display "schema refuse under soak=")
+      (display refuse-ok)
+      (display " escapes=")
+      (display (prom:stats-ref "escapes"))
+      (newline)
+      (display "stats: ")
+      (write (prom:stats-alist))
+      (newline)
+
+      (let ((all-ok
+              (and (= okc ROUNDS) (= failc 0) refuse-ok
+                   (prom:validate-nodes-pass?)
+                   (prom:validate-ownership-pass?)
+                   (= (prom:stats-ref "escapes") 0)
+                   (= (prom:stats-ref "correctness_fail") 0))))
+        (if all-ok
+          (begin
+            (display "PASS: rule propose under scale soak (escapes=0)")
+            (newline)
+            (display "RESULT pass example=09-propose-under-soak escapes=0 rounds=")
+            (display ROUNDS)
+            (display " elapsed_ms=")
+            (display elapsed)
+            (newline))
+          (begin
+            (display "FAIL: propose-under-soak")
+            (newline)
+            (display "RESULT fail example=09-propose-under-soak")
+            (newline)
+            (display "  okc=")
+            (display okc)
+            (display " failc=")
+            (display failc)
+            (display " refuse=")
+            (display refuse-ok)
+            (newline)))))))

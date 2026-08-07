@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 missing=0
-for f in README.md LICENSE notes/aura-unify.md notes/denseness-report.md notes/escape-log.md notes/host-residuals.md prompts/GROK.md scripts/run-aura.sh scripts/run-all.sh lib/prometheus-min.aura lib/prometheus-measure.aura lib/prometheus-scale.aura lib/prometheus-mutate.aura lib/prometheus-cost.aura lib/prometheus-llm.aura examples/01-minimal-scale/main.aura examples/02-continuous-mutate/main.aura examples/03-incremental-cost/main.aura examples/04-propose-edge/main.aura examples/06-scale-soak/main.aura examples/07-long-n-50/main.aura examples/08-long-n-100/main.aura; do
+for f in README.md LICENSE notes/aura-unify.md notes/denseness-report.md notes/escape-log.md notes/host-residuals.md prompts/GROK.md scripts/run-aura.sh scripts/run-all.sh lib/prometheus-min.aura lib/prometheus-measure.aura lib/prometheus-scale.aura lib/prometheus-mutate.aura lib/prometheus-cost.aura lib/prometheus-llm.aura examples/01-minimal-scale/main.aura examples/02-continuous-mutate/main.aura examples/03-incremental-cost/main.aura examples/04-propose-edge/main.aura examples/06-scale-soak/main.aura examples/07-long-n-50/main.aura examples/08-long-n-100/main.aura examples/09-propose-under-soak/main.aura examples/10-dual-subject/main.aura; do
   if [[ ! -e "$f" ]]; then
     echo "MISSING: $f"
     missing=1

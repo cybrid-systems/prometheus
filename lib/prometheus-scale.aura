@@ -16,7 +16,9 @@
         prom:build-leaves-src
         prom:build-deep-src
         prom:build-scale-src
+        prom:build-dual-subject-src
         prom:install-source
+        prom:install-dual-subjects
         prom:node-count
         prom:def-count
         prom:generation
@@ -64,6 +66,22 @@
   (string-append
     (prom:build-leaves-src n-leaves)
     (prom:build-deep-src depth)))
+
+; Dual mutable subjects for isolation denseness (subject-a / subject-b).
+(define (prom:build-dual-subject-src n-leaves)
+  (string-append
+    (prom:build-leaves-src n-leaves)
+    "(define subject-a (lambda (x) (* x 2)))\n"
+    "(define subject-b (lambda (x) (* x 2)))\n"))
+
+(define (prom:install-dual-subjects n-leaves)
+  (let* ((src (prom:build-dual-subject-src n-leaves))
+         (src-len (string-length src))
+         (ok (prom:install-source src)))
+    (prom:stats-set! "last_src_len" src-len)
+    (if ok
+      (begin (prom:observe-flatast!) #t)
+      #f)))
 
 ; ── Install ──────────────────────────────────────────────────────
 

@@ -10,9 +10,11 @@
 | 06 | [scale-soak](06-scale-soak/) | A B C F | landed N=25 |
 | 07 | [long-n-50](07-long-n-50/) | A B C F | landed N=50 |
 | 08 | [long-n-100](08-long-n-100/) | A B C F | landed N=100 |
+| 09 | [propose-under-soak](09-propose-under-soak/) | A B D F | landed |
+| 10 | [dual-subject](10-dual-subject/) | A B F | landed |
 
 ```bash
-./scripts/run-all.sh              # offline denseness suite
-./scripts/overnight-scale.sh      # soak ladder
-./scripts/compare-live-llms.sh    # live MiniMax + DeepSeek
+./scripts/run-all.sh
+./scripts/overnight-scale.sh
+./scripts/compare-live-llms.sh
 ```
