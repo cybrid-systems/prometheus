@@ -1,0 +1,155 @@
+; examples/01-minimal-scale/main.aura
+;
+; Phase 1 denseness probe — pure-Aura large FlatAST construction + baseline metrology.
+; No continuous mutation, no LLM, no FFI. Escape count on scale path must be 0.
+;
+; Axes: A (scale completeness) + F (metrology)
+;
+; Loop coverage:
+;   Build scale source → set-code + eval → Observe FlatAST metrics →
+;   Validate nodes/ownership → Sample closed-form correctness
+;   (Continuous mutation / LLM propose / rollback left to later probes)
+;
+; Run: ./scripts/run-aura.sh examples/01-minimal-scale/main.aura
+;
+; Binding note: prefer let* over internal define for dependent values
+; (host internal-define behaves like simultaneous letrec).
+
+(require "prometheus-min" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 01-minimal-scale: pure-Aura FlatAST denseness ===")
+(newline)
+(display "prom:min-version=")
+(display prom:min-version)
+(display " scale-version=")
+(display prom:scale-version)
+(newline)
+
+; Scale knobs (CI-friendly defaults; raise for soak later)
+; N=200 leaves + depth=80 ≈ 1.4k nodes, ~1–2s install on current host
+(define N-LEAVES 200)
+(define DEPTH 80)
+; Lower bounds for denseness gates (empirical: ~6 nodes/leaf + ~3/depth level)
+(define MIN-NODES 1000)
+(define WANT-DEFS (+ N-LEAVES 1))
+
+(display "scale knobs: n-leaves=")
+(display N-LEAVES)
+(display " depth=")
+(display DEPTH)
+(display " min-nodes=")
+(display MIN-NODES)
+(newline)
+
+; ── 1. Build + install + observe ──
+(let* ((run (prom:install-and-observe N-LEAVES DEPTH))
+       (install-ok (prom:alist-ref ":install_ok" run #f))
+       (src-len (prom:alist-ref ":src_len" run 0))
+       (elapsed (prom:alist-ref ":elapsed_ms" run 0))
+       (nc (prom:alist-ref ":node_count" run 0))
+       (dc (prom:alist-ref ":def_count" run 0))
+       (gen (prom:alist-ref ":generation" run 0))
+       (v-nodes (prom:alist-ref ":validate_nodes" run #f))
+       (v-own (prom:alist-ref ":validate_ownership" run #f)))
+  (display "install: ")
+  (write run)
+  (newline)
+
+  (let* ((install-check (prom:check-true install-ok))
+         (nodes-check (prom:check-ge nc MIN-NODES))
+         (defs-check (prom:check-eq dc WANT-DEFS))
+         (gen-check (prom:check-ge gen 1))
+         (v-nodes-check (prom:check-true v-nodes))
+         (v-own-check (prom:check-true v-own)))
+    (display "gates: install=")
+    (display install-check)
+    (display " nodes>=")
+    (display MIN-NODES)
+    (display "?")
+    (display nodes-check)
+    (display " defs=")
+    (display defs-check)
+    (display " gen=")
+    (display gen-check)
+    (display " validate-nodes=")
+    (display v-nodes-check)
+    (display " validate-own=")
+    (display v-own-check)
+    (newline)
+
+    ; ── 2. Closed-form sample correctness on installed subject ──
+    ; Leaves: (f{i} 0) = i ; deep: (deep 0) = DEPTH
+    (let* ((c0 (prom:check-eq (f0 0) 0))
+           (c1 (prom:check-eq (f1 0) 1))
+           (cmid (prom:check-eq (f100 0) 100))
+           (clast (prom:check-eq (f199 0) 199))
+           (cdeep (prom:check-eq (deep 0) DEPTH)))
+      (display "correctness: f0=")
+      (display c0)
+      (display " f1=")
+      (display c1)
+      (display " f100=")
+      (display cmid)
+      (display " f199=")
+      (display clast)
+      (display " deep=")
+      (display cdeep)
+      (newline)
+
+      ; ── 3. Snapshot baseline (dual-correctness scaffolding for later phases) ──
+      (let* ((snap (prom:scale-snapshot "01-baseline"))
+             (snap-ok (prom:check-ge snap 0)))
+        (display "snapshot id=")
+        (display snap)
+        (display " ok=")
+        (display snap-ok)
+        (newline)
+
+        ; ── Verdict ──
+        (display "stats: ")
+        (write (prom:stats-alist))
+        (newline)
+
+        (let ((all-ok
+                (and install-check nodes-check defs-check gen-check
+                     v-nodes-check v-own-check
+                     c0 c1 cmid clast cdeep snap-ok
+                     (= (prom:stats-ref "correctness_fail") 0)
+                     (>= (prom:stats-ref "correctness_ok") 10)
+                     (>= (prom:stats-ref "validate_ok") 2)
+                     (= (prom:stats-ref "escapes") 0)
+                     (>= nc MIN-NODES)
+                     (= dc WANT-DEFS))))
+          (if all-ok
+            (begin
+              (display "PASS: pure-Aura large FlatAST + metrology (escapes=0)")
+              (newline)
+              (display "RESULT pass example=01-minimal-scale escapes=0 nodes=")
+              (display nc)
+              (display " defs=")
+              (display dc)
+              (display " elapsed_ms=")
+              (display elapsed)
+              (newline))
+            (begin
+              (display "FAIL: pure-Aura scale denseness probe")
+              (newline)
+              (display "RESULT fail example=01-minimal-scale")
+              (newline)
+              (display "  install=")
+              (display install-check)
+              (display " nodes=")
+              (display nc)
+              (display " defs=")
+              (display dc)
+              (display " gen=")
+              (display gen)
+              (display " v-nodes=")
+              (display v-nodes-check)
+              (display " v-own=")
+              (display v-own-check)
+              (display " escapes=")
+              (display (prom:stats-ref "escapes"))
+              (newline))))))))

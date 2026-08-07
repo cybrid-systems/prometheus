@@ -1,0 +1,277 @@
+; lib/prometheus-mutate.aura — Axis B: continuous typed mutation helpers
+;
+; (require "prometheus-mutate" all:)
+;
+; Thin wrappers around Aura mutate / snapshot surfaces (Aether / Hephaestus pattern).
+; Designed for large FlatAST backdrop + one mutable `subject` lambda binding.
+;
+; Host residual H3: after set-code scale install, sampling `subject` at top-level
+; forms can return stale/identity values; samples taken *inside* the continuous
+; while-loop body (same compilation unit as rebind+eval) are reliable. Probes
+; must verify correctness inside that loop, not only after it returns.
+
+(export prom:mutate-version
+        prom:safety-ok?
+        prom:snapshot
+        prom:restore
+        prom:rebind-safe
+        prom:rebind-live
+        prom:build-subject-src
+        prom:install-scale-subject
+        prom:body-scale
+        prom:want-scale
+        prom:sample-subject
+        prom:leaves-intact?
+        prom:continuous-rebind!
+        prom:poison-restore!
+        prom:mutation-total)
+
+(require "prometheus-measure" all:)
+(require "prometheus-scale" all:)
+(require "std/mutate" all:)
+(require "std/string" all:)
+
+(define prom:mutate-version 1)
+
+(define (prom:safety-ok?)
+  (try
+    (and (mutate:boundary-safe?) (mutate:quota-ok?))
+    (catch (e) #f)))
+
+(define (prom:snapshot tag)
+  (try
+    (let ((id (ast:snapshot tag)))
+      (if (number? id) id -1))
+    (catch (e) -1)))
+
+(define (prom:restore snap-id)
+  (if (and (number? snap-id) (>= snap-id 0))
+    (try
+      (begin
+        (ast:restore snap-id)
+        (try (eval-current) (catch (e) #f))
+        #t)
+      (catch (e) #f))
+    #f))
+
+; Live rebind without pre-snapshot (fast path for continuous rounds).
+; Returns alist: :ok :mut-ok :reason :got (sample of subject at arg)
+(define (prom:rebind-live name body summary sample-arg)
+  (if (not (prom:safety-ok?))
+    (list (cons ":ok" #f)
+          (cons ":mut-ok" #f)
+          (cons ":reason" "boundary-or-quota")
+          (cons ":got" -1))
+    (begin
+      (try (mutate:safe-yield) (catch (e) #f))
+      (let ((mut-res (try (mutate:rebind name body summary) (catch (e) #f))))
+        (if (eq? mut-res #t)
+          (begin
+            (try (eval-current) (catch (e) #f))
+            (let ((got (try (subject sample-arg) (catch (e) -999))))
+              (prom:stats-bump! "mut_ok")
+              (list (cons ":ok" #t)
+                    (cons ":mut-ok" #t)
+                    (cons ":reason" "applied")
+                    (cons ":got" got))))
+          (begin
+            (prom:stats-bump! "mut_fail")
+            (list (cons ":ok" #f)
+                  (cons ":mut-ok" #f)
+                  (cons ":reason" "rebind-failed")
+                  (cons ":got" -1))))))))
+
+; Safe rebind with snapshot (for poison/restore paths).
+; Returns alist: :ok :snap :mut-ok :reason :got
+(define (prom:rebind-safe name body summary sample-arg)
+  (if (not (prom:safety-ok?))
+    (list (cons ":ok" #f)
+          (cons ":snap" -1)
+          (cons ":mut-ok" #f)
+          (cons ":reason" "boundary-or-quota")
+          (cons ":got" -1))
+    (let ((snap (prom:snapshot summary)))
+      (try (mutate:safe-yield) (catch (e) #f))
+      (let ((mut-res (try (mutate:rebind name body summary) (catch (e) #f))))
+        (if (eq? mut-res #t)
+          (let ((ev-ok (try (begin (eval-current) #t) (catch (e) #f))))
+            (if ev-ok
+              (let ((got (try (subject sample-arg) (catch (e) -999))))
+                (prom:stats-bump! "mut_ok")
+                (list (cons ":ok" #t)
+                      (cons ":snap" snap)
+                      (cons ":mut-ok" #t)
+                      (cons ":reason" "applied")
+                      (cons ":got" got)))
+              (begin
+                (prom:restore snap)
+                (prom:stats-bump! "mut_fail")
+                (list (cons ":ok" #f)
+                      (cons ":snap" snap)
+                      (cons ":mut-ok" #t)
+                      (cons ":reason" "eval-failed")
+                      (cons ":got" -1)))))
+          (begin
+            (prom:stats-bump! "mut_fail")
+            (list (cons ":ok" #f)
+                  (cons ":snap" snap)
+                  (cons ":mut-ok" #f)
+                  (cons ":reason" "rebind-failed")
+                  (cons ":got" -1))))))))
+
+; ── Scale + subject subject construction ─────────────────────────
+
+; Leaves backdrop + mutable subject (lambda value binding, Aether style).
+; Initial body: (lambda (x) (* x 2))  → (subject 7) = 14
+(define (prom:build-subject-src n-leaves)
+  (string-append
+    (prom:build-leaves-src n-leaves)
+    "(define subject (lambda (x) (* x 2)))\n"))
+
+(define (prom:install-scale-subject n-leaves)
+  (let* ((src (prom:build-subject-src n-leaves))
+         (src-len (string-length src))
+         (ok (prom:install-source src)))
+    (prom:stats-set! "last_src_len" src-len)
+    (if ok
+      (begin
+        (prom:observe-flatast!)
+        #t)
+      #f)))
+
+; Alternating scale bodies for continuous load: even → *3, odd → *5
+(define (prom:body-scale i)
+  (if (= (modulo i 2) 0)
+    "(lambda (x) (* x 3))"
+    "(lambda (x) (* x 5))"))
+
+(define (prom:want-scale i sample-arg)
+  (if (= (modulo i 2) 0)
+    (* sample-arg 3)
+    (* sample-arg 5)))
+
+(define (prom:sample-subject arg)
+  (try (subject arg) (catch (e) -999)))
+
+; Spot-check backdrop leaves still closed-form correct.
+; n-leaves must be > 50 for f50 sample; always checks f0.
+(define (prom:leaves-intact? n-leaves)
+  (let ((a (try (f0 0) (catch (e) -1)))
+        (b (if (>= n-leaves 50)
+              (try (f50 0) (catch (e) -1))
+              0))
+        (c (if (>= n-leaves 1)
+              (try
+                ; last leaf f{n-1}
+                (let ((name-ok #t))
+                  ; call f{n-1} via known mid samples only when large enough
+                  #t)
+                (catch (e) #f))
+              #t)))
+    (and (= a 0)
+         (if (>= n-leaves 50) (= b 50) #t))))
+
+; Run `rounds` continuous rebind-live rounds. Samples must stay inside this
+; while body (host residual H3). Returns alist summary.
+; sample-arg: argument passed to subject (default 7 in probes).
+(define (prom:continuous-rebind! rounds n-leaves sample-arg)
+  (let ((i 0)
+        (okc 0)
+        (failc 0)
+        (t0 (monotonic-ms)))
+    (while (lambda () (< i rounds))
+      (lambda ()
+        (let* ((body (prom:body-scale i))
+               (want (prom:want-scale i sample-arg))
+               (r (prom:rebind-live "subject" body
+                    (string-append "c" (number->string i))
+                    sample-arg))
+               (got (prom:alist-ref ":got" r -1))
+               (leaves-ok (prom:leaves-intact? n-leaves))
+               (round-ok (and (eq? (prom:alist-ref ":ok" r #f) #t)
+                              (= got want)
+                              leaves-ok)))
+          (prom:stats-bump! "mut_rounds")
+          (if round-ok
+            (begin
+              (set! okc (+ okc 1))
+              (prom:stats-bump! "correctness_ok"))
+            (begin
+              (set! failc (+ failc 1))
+              (prom:stats-bump! "correctness_fail")))
+          (set! i (+ i 1)))))
+    (let* ((t1 (monotonic-ms))
+           (elapsed (if (and (number? t0) (number? t1) (>= (- t1 t0) 0))
+                      (- t1 t0)
+                      0))
+           (gen (prom:generation))
+           (nc (prom:node-count)))
+      (prom:stats-set! "last_elapsed_ms" elapsed)
+      (prom:stats-set! "last_generation" gen)
+      (prom:stats-set! "last_node_count" nc)
+      (list (cons ":ok_count" okc)
+            (cons ":fail_count" failc)
+            (cons ":rounds" rounds)
+            (cons ":elapsed_ms" elapsed)
+            (cons ":generation" gen)
+            (cons ":node_count" nc)
+            (cons ":all_ok" (and (= failc 0) (= okc rounds)))))))
+
+; Poison subject then restore snapshot. Verification runs inside a 1-iter while
+; so samples stay in the reliable compilation path (H3).
+; Returns alist: :poison_ok :restored_ok :poison_got :restored_got :leaves_ok
+(define (prom:poison-restore! sample-arg want-good n-leaves)
+  (let ((poison-ok #f)
+        (restored-ok #f)
+        (poison-got -1)
+        (restored-got -1)
+        (leaves-ok #f)
+        (snap -1)
+        (done 0))
+    ; Establish known-good triple and snapshot inside loop unit
+    (while (lambda () (< done 1))
+      (lambda ()
+        (let* ((r-good (prom:rebind-live "subject" "(lambda (x) (* x 3))"
+                          "pre-poison-good" sample-arg))
+               (got-good (prom:alist-ref ":got" r-good -1)))
+          (set! snap (prom:snapshot "prom-good"))
+          ; poison
+          (let* ((r-bad (prom:rebind-live "subject" "(lambda (x) (* x 99))"
+                           "poison" sample-arg)))
+            (set! poison-got (prom:alist-ref ":got" r-bad -1))
+            (set! poison-ok (and (eq? (prom:alist-ref ":ok" r-bad #f) #t)
+                                 (= poison-got (* sample-arg 99))))
+            ; restore
+            (let ((rstr (prom:restore snap)))
+              (set! restored-got (prom:sample-subject sample-arg))
+              (set! leaves-ok (prom:leaves-intact? n-leaves))
+              (set! restored-ok (and rstr
+                                     (= restored-got want-good)
+                                     leaves-ok
+                                     (= got-good want-good)))
+              (if poison-ok
+                (prom:stats-bump! "correctness_ok")
+                (prom:stats-bump! "correctness_fail"))
+              (if restored-ok
+                (begin
+                  (prom:stats-bump! "rollback_ok")
+                  (prom:stats-bump! "correctness_ok"))
+                (begin
+                  (prom:stats-bump! "rollback_fail")
+                  (prom:stats-bump! "correctness_fail")))
+              (set! done 1))))))
+    (list (cons ":poison_ok" poison-ok)
+          (cons ":restored_ok" restored-ok)
+          (cons ":poison_got" poison-got)
+          (cons ":restored_got" restored-got)
+          (cons ":leaves_ok" leaves-ok)
+          (cons ":snap" snap)
+          (cons ":want_good" want-good))))
+
+(define (prom:mutation-total)
+  (try
+    (let ((s (mutate:summary)))
+      (let ((n (prom:alist-ref ":total" s 0)))
+        (prom:stats-set! "last_mut_total" (if (number? n) n 0))
+        (if (number? n) n 0)))
+    (catch (e) 0)))

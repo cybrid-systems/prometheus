@@ -1,0 +1,152 @@
+; lib/prometheus-measure.aura — Axis F: metrology for denseness probes
+;
+; (require "prometheus-measure" all:)
+;
+; Timing uses host (monotonic-ms). Stats live in a process hash.
+; Alist helpers for probe result alists and stats export.
+
+(export prom:stats
+        prom:stats-reset!
+        prom:stats-ref
+        prom:stats-bump!
+        prom:stats-set!
+        prom:stats-alist
+        prom:alist-ref
+        prom:time-call
+        prom:ops-per-sec
+        prom:ops-per-ms
+        prom:check-eq
+        prom:check-true
+        prom:check-ge)
+
+(define (prom:alist-ref key lst default)
+  (let loop ((ys lst))
+    (cond ((null? ys) default)
+          ((not (pair? (car ys))) (loop (cdr ys)))
+          ((equal? (car (car ys)) key) (cdr (car ys)))
+          (else (loop (cdr ys))))))
+
+(define (prom:make-stats-hash)
+  (let ((h (hash)))
+    (hash-set! h "scale_runs" 0)
+    (hash-set! h "nodes_built" 0)
+    (hash-set! h "defs_built" 0)
+    (hash-set! h "correctness_ok" 0)
+    (hash-set! h "correctness_fail" 0)
+    (hash-set! h "validate_ok" 0)
+    (hash-set! h "validate_fail" 0)
+    (hash-set! h "mut_ok" 0)
+    (hash-set! h "mut_fail" 0)
+    (hash-set! h "mut_rounds" 0)
+    (hash-set! h "rollback_ok" 0)
+    (hash-set! h "rollback_fail" 0)
+    (hash-set! h "escapes" 0)
+    (hash-set! h "last_escape_reason" 0)
+    (hash-set! h "last_elapsed_ms" 0)
+    (hash-set! h "last_elapsed_s" 0)
+    (hash-set! h "last_ops" 0)
+    (hash-set! h "last_result" 0)
+    (hash-set! h "last_node_count" 0)
+    (hash-set! h "last_def_count" 0)
+    (hash-set! h "last_src_len" 0)
+    (hash-set! h "last_generation" 0)
+    (hash-set! h "last_mut_total" 0)
+    h))
+
+(define *prom-stats* (prom:make-stats-hash))
+
+(define (prom:stats)
+  *prom-stats*)
+
+(define (prom:stats-reset!)
+  (set! *prom-stats* (prom:make-stats-hash))
+  *prom-stats*)
+
+(define (prom:stats-ref key)
+  (let ((v (hash-ref *prom-stats* key 0)))
+    (if (number? v) v 0)))
+
+(define (prom:stats-bump! key)
+  (let ((n (+ 1 (prom:stats-ref key))))
+    (hash-set! *prom-stats* key n)
+    n))
+
+(define (prom:stats-set! key val)
+  (hash-set! *prom-stats* key val)
+  val)
+
+(define (prom:stats-alist)
+  (list (cons "scale_runs" (prom:stats-ref "scale_runs"))
+        (cons "nodes_built" (prom:stats-ref "nodes_built"))
+        (cons "defs_built" (prom:stats-ref "defs_built"))
+        (cons "correctness_ok" (prom:stats-ref "correctness_ok"))
+        (cons "correctness_fail" (prom:stats-ref "correctness_fail"))
+        (cons "validate_ok" (prom:stats-ref "validate_ok"))
+        (cons "validate_fail" (prom:stats-ref "validate_fail"))
+        (cons "mut_ok" (prom:stats-ref "mut_ok"))
+        (cons "mut_fail" (prom:stats-ref "mut_fail"))
+        (cons "mut_rounds" (prom:stats-ref "mut_rounds"))
+        (cons "rollback_ok" (prom:stats-ref "rollback_ok"))
+        (cons "rollback_fail" (prom:stats-ref "rollback_fail"))
+        (cons "escapes" (prom:stats-ref "escapes"))
+        (cons "last_escape_reason" (prom:stats-ref "last_escape_reason"))
+        (cons "last_elapsed_ms" (prom:stats-ref "last_elapsed_ms"))
+        (cons "last_elapsed_s" (prom:stats-ref "last_elapsed_s"))
+        (cons "last_ops" (prom:stats-ref "last_ops"))
+        (cons "last_result" (prom:stats-ref "last_result"))
+        (cons "last_node_count" (prom:stats-ref "last_node_count"))
+        (cons "last_def_count" (prom:stats-ref "last_def_count"))
+        (cons "last_src_len" (prom:stats-ref "last_src_len"))
+        (cons "last_generation" (prom:stats-ref "last_generation"))
+        (cons "last_mut_total" (prom:stats-ref "last_mut_total"))))
+
+; Run thunk once; record elapsed via host (monotonic-ms).
+; ops: logical operation count for this run (caller-defined).
+; Returns alist: :result :elapsed_ms :elapsed_s :ops :ops_per_s :ops_per_ms
+(define (prom:time-call thunk ops)
+  (let ((t0 (monotonic-ms)))
+    (let ((result (thunk)))
+      (let ((t1 (monotonic-ms)))
+        (let ((elapsed-ms
+                (if (and (number? t0) (number? t1) (>= (- t1 t0) 0))
+                  (- t1 t0)
+                  0)))
+          (let ((ops-n (if (number? ops) ops 0)))
+            (let ((ops-s (prom:ops-per-sec ops-n elapsed-ms))
+                  (ops-m (prom:ops-per-ms ops-n elapsed-ms)))
+              (prom:stats-bump! "scale_runs")
+              (prom:stats-set! "last_elapsed_ms" elapsed-ms)
+              (prom:stats-set! "last_elapsed_s" (quotient elapsed-ms 1000))
+              (prom:stats-set! "last_ops" ops-n)
+              (prom:stats-set! "last_result" (if (number? result) result 0))
+              (list (cons ":result" result)
+                    (cons ":elapsed_ms" elapsed-ms)
+                    (cons ":elapsed_s" (quotient elapsed-ms 1000))
+                    (cons ":ops" ops-n)
+                    (cons ":ops_per_s" ops-s)
+                    (cons ":ops_per_ms" ops-m))))))))))
+
+(define (prom:ops-per-sec ops elapsed-ms)
+  (if (and (number? ops) (number? elapsed-ms) (> elapsed-ms 0))
+    (quotient (* ops 1000) elapsed-ms)
+    0))
+
+(define (prom:ops-per-ms ops elapsed-ms)
+  (if (and (number? ops) (number? elapsed-ms) (> elapsed-ms 0))
+    (quotient ops elapsed-ms)
+    0))
+
+(define (prom:check-eq actual expected)
+  (if (and (number? actual) (number? expected) (= actual expected))
+    (begin (prom:stats-bump! "correctness_ok") #t)
+    (begin (prom:stats-bump! "correctness_fail") #f)))
+
+(define (prom:check-true flag)
+  (if flag
+    (begin (prom:stats-bump! "correctness_ok") #t)
+    (begin (prom:stats-bump! "correctness_fail") #f)))
+
+(define (prom:check-ge actual minimum)
+  (if (and (number? actual) (number? minimum) (>= actual minimum))
+    (begin (prom:stats-bump! "correctness_ok") #t)
+    (begin (prom:stats-bump! "correctness_fail") #f)))

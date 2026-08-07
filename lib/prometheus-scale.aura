@@ -1,0 +1,172 @@
+; lib/prometheus-scale.aura — Axis A: large FlatAST construction helpers
+;
+; (require "prometheus-scale" all:)
+;
+; Pure-Aura builders that emit source text, then install into the workspace
+; FlatAST via set-code + eval-current. Metrology reads host stats:get surfaces
+; (ast:nodes / ast:defs / ast:generation) and ast:validate-*.
+;
+; Design choices for Phase 1:
+;   - Independent leaf defines (no cross-define calls) for reliable eval
+;   - Optional deep nested (+ 1 ...) expression for depth stress
+;   - Node/def counts via (length (stats:get "ast:nodes")) — fine at
+;     minimal-scale sizes; a count-only prim may become an E later at 1e5+
+
+(export prom:scale-version
+        prom:build-leaves-src
+        prom:build-deep-src
+        prom:build-scale-src
+        prom:install-source
+        prom:node-count
+        prom:def-count
+        prom:generation
+        prom:validate-nodes-pass?
+        prom:validate-ownership-pass?
+        prom:scale-snapshot
+        prom:observe-flatast!
+        prom:install-and-observe)
+
+(require "prometheus-measure" all:)
+(require "std/stats" all:)
+(require "std/string" all:)
+
+(define prom:scale-version 1)
+
+; ── Source builders ──────────────────────────────────────────────
+
+; N independent leaves: (define (f{i} x) (+ x i))
+; Closed form: (f{i} 0) = i
+(define (prom:build-leaves-src n)
+  (let ((acc "")
+        (i 0))
+    (while (lambda () (< i n))
+      (lambda ()
+        (set! acc
+          (string-append acc
+            "(define (f" (number->string i)
+            " x) (+ x " (number->string i) "))\n"))
+        (set! i (+ i 1))))
+    acc))
+
+; One deep nest: (define (deep x) (+ 1 (+ 1 ... x))) with `depth` plus-ones.
+; Closed form: (deep 0) = depth
+(define (prom:build-deep-src depth)
+  (let ((inner "x")
+        (i 0))
+    (while (lambda () (< i depth))
+      (lambda ()
+        (set! inner (string-append "(+ 1 " inner ")"))
+        (set! i (+ i 1))))
+    (string-append "(define (deep x) " inner ")\n")))
+
+; Combined wide + deep scale subject.
+(define (prom:build-scale-src n-leaves depth)
+  (string-append
+    (prom:build-leaves-src n-leaves)
+    (prom:build-deep-src depth)))
+
+; ── Install ──────────────────────────────────────────────────────
+
+(define (prom:install-source source)
+  (if (and (string? source) (> (string-length source) 0))
+    (begin
+      (set-code source)
+      (try (begin (eval-current) #t) (catch (e) #f)))
+    #f))
+
+; ── FlatAST observation (host surfaces, pure-Aura composition) ───
+
+(define (prom:node-count)
+  (let ((nodes (try (stats:get "ast:nodes") (catch (e) (list)))))
+    (if (pair? nodes)
+      (length nodes)
+      (if (null? nodes) 0 0))))
+
+(define (prom:def-count)
+  (let ((defs (try (stats:get "ast:defs") (catch (e) (list)))))
+    (if (pair? defs)
+      (length defs)
+      (if (null? defs) 0 0))))
+
+(define (prom:generation)
+  (let ((g (try (stats:get "ast:generation") (catch (e) 0))))
+    (if (number? g) g 0)))
+
+; validate-nodes returns alist-like list including (":pass" . #t/#f)
+(define (prom:validate-nodes-pass?)
+  (let ((v (try (ast:validate-nodes) (catch (e) #f))))
+    (cond
+      ((eq? v #t) #t)
+      ((eq? v #f) #f)
+      ((pair? v)
+        (let ((p (prom:alist-ref ":pass" v #f)))
+          (if (eq? p #t) #t #f)))
+      (else #f))))
+
+(define (prom:validate-ownership-pass?)
+  (let ((v (try (ast:validate-ownership) (catch (e) #f))))
+    (cond
+      ((eq? v #t) #t)
+      ((eq? v #f) #f)
+      ((pair? v)
+        (let ((p (prom:alist-ref ":pass" v #f)))
+          (if (eq? p #t) #t #f)))
+      (else #f))))
+
+(define (prom:scale-snapshot tag)
+  (try
+    (let ((id (ast:snapshot tag)))
+      (if (number? id) id -1))
+    (catch (e) -1)))
+
+; Observe current workspace FlatAST into stats. Returns observation alist.
+(define (prom:observe-flatast!)
+  (let* ((nc (prom:node-count))
+         (dc (prom:def-count))
+         (gen (prom:generation))
+         (v-nodes (prom:validate-nodes-pass?))
+         (v-own (prom:validate-ownership-pass?)))
+    (prom:stats-set! "last_node_count" nc)
+    (prom:stats-set! "last_def_count" dc)
+    (prom:stats-set! "last_generation" gen)
+    (prom:stats-set! "nodes_built" nc)
+    (prom:stats-set! "defs_built" dc)
+    (if v-nodes
+      (prom:stats-bump! "validate_ok")
+      (prom:stats-bump! "validate_fail"))
+    (if v-own
+      (prom:stats-bump! "validate_ok")
+      (prom:stats-bump! "validate_fail"))
+    (list (cons ":node_count" nc)
+          (cons ":def_count" dc)
+          (cons ":generation" gen)
+          (cons ":validate_nodes" v-nodes)
+          (cons ":validate_ownership" v-own))))
+
+; Build + install + timed observe. Returns alist merging install/observe/timing.
+; n-leaves / depth are the scale knobs; ops counted as node_count after install.
+(define (prom:install-and-observe n-leaves depth)
+  (let* ((src (prom:build-scale-src n-leaves depth))
+         (src-len (string-length src)))
+    (prom:stats-set! "last_src_len" src-len)
+    (let* ((timed
+             (prom:time-call
+               (lambda ()
+                 (let ((ok (prom:install-source src)))
+                   (if ok
+                     (prom:observe-flatast!)
+                     (list (cons ":install" #f)))))
+               (+ n-leaves depth)))
+           (obs (prom:alist-ref ":result" timed (list)))
+           (install-ok
+             (not (eq? (prom:alist-ref ":install" obs #t) #f))))
+      (list (cons ":install_ok" install-ok)
+            (cons ":src_len" src-len)
+            (cons ":n_leaves" n-leaves)
+            (cons ":depth" depth)
+            (cons ":elapsed_ms" (prom:alist-ref ":elapsed_ms" timed 0))
+            (cons ":node_count" (prom:alist-ref ":node_count" obs 0))
+            (cons ":def_count" (prom:alist-ref ":def_count" obs 0))
+            (cons ":generation" (prom:alist-ref ":generation" obs 0))
+            (cons ":validate_nodes" (prom:alist-ref ":validate_nodes" obs #f))
+            (cons ":validate_ownership" (prom:alist-ref ":validate_ownership" obs #f))))))

@@ -1,0 +1,170 @@
+; examples/02-continuous-mutate/main.aura
+;
+; Phase 2 denseness probe — continuous typed mutation on a large FlatAST.
+; Rebind a single subject under a multi-define backdrop; verify correctness
+; and leaf integrity each round; poison + restore for dual-ish rollback.
+;
+; Axes: A (scale backdrop) + B (continuous mutation) + F (metrology)
+;
+; Loop coverage:
+;   Install scale+subject → Continuous rebind (*3/*5) → Observe gen/mut →
+;   Poison → Restore snapshot → Verify leaves + subject
+;
+; Host residual H3: subject samples are taken inside continuous/poison helpers
+; (while-loop compilation unit), not only at top-level after rebind.
+;
+; Run: ./scripts/run-aura.sh examples/02-continuous-mutate/main.aura
+
+(require "prometheus-min" all:)
+
+(prom:stats-reset!)
+
+(display "=== Prometheus 02-continuous-mutate: typed rebind on large FlatAST ===")
+(newline)
+(display "prom:min-version=")
+(display prom:min-version)
+(display " mutate-version=")
+(display prom:mutate-version)
+(newline)
+
+; Scale knobs — backdrop large enough to stress multi-define workspace
+(define N-LEAVES 120)
+(define ROUNDS 30)
+(define SAMPLE-ARG 7)
+(define MIN-NODES 600)
+(define WANT-DEFS (+ N-LEAVES 1))
+
+(display "knobs: n-leaves=")
+(display N-LEAVES)
+(display " rounds=")
+(display ROUNDS)
+(display " sample-arg=")
+(display SAMPLE-ARG)
+(newline)
+
+(display "safety-ok=")
+(display (prom:safety-ok?))
+(newline)
+
+; ── 1. Install scale backdrop + mutable subject ──
+(let* ((installed (prom:install-scale-subject N-LEAVES))
+       (nc0 (prom:node-count))
+       (dc0 (prom:def-count))
+       (init-sample (prom:sample-subject SAMPLE-ARG))
+       (init-ok (and installed
+                     (prom:check-true installed)
+                     (prom:check-ge nc0 MIN-NODES)
+                     (prom:check-eq dc0 WANT-DEFS)
+                     (prom:check-eq init-sample (* SAMPLE-ARG 2))
+                     (prom:check-true (prom:leaves-intact? N-LEAVES))
+                     (prom:check-true (prom:validate-nodes-pass?)))))
+  (display "install: ok=")
+  (display installed)
+  (display " nodes=")
+  (display nc0)
+  (display " defs=")
+  (display dc0)
+  (display " subject(7)=")
+  (display init-sample)
+  (display " (want 14)")
+  (newline)
+  (display "install gates ok=")
+  (display init-ok)
+  (newline)
+
+  (if (not init-ok)
+    (begin
+      (display "FAIL: scale+subject install")
+      (newline)
+      (display "RESULT fail example=02-continuous-mutate")
+      (newline))
+    (begin
+      ; ── 2. Continuous rebind under scale backdrop ──
+      (let* ((cont (prom:continuous-rebind! ROUNDS N-LEAVES SAMPLE-ARG))
+             (okc (prom:alist-ref ":ok_count" cont 0))
+             (failc (prom:alist-ref ":fail_count" cont 0))
+             (elapsed (prom:alist-ref ":elapsed_ms" cont 0))
+             (gen (prom:alist-ref ":generation" cont 0))
+             (nc1 (prom:alist-ref ":node_count" cont 0))
+             (all-cont (prom:alist-ref ":all_ok" cont #f))
+             (cont-check (and (prom:check-true all-cont)
+                              (prom:check-eq okc ROUNDS)
+                              (prom:check-eq failc 0)
+                              (prom:check-ge gen 1))))
+        (display "continuous: ")
+        (write cont)
+        (newline)
+        (display "continuous gates ok=")
+        (display cont-check)
+        (newline)
+
+        ; ── 3. Poison + restore (samples inside helper while) ──
+        (let* ((pr (prom:poison-restore! SAMPLE-ARG (* SAMPLE-ARG 3) N-LEAVES))
+               (poison-ok (prom:alist-ref ":poison_ok" pr #f))
+               (restored-ok (prom:alist-ref ":restored_ok" pr #f))
+               (pr-check (and (prom:check-true poison-ok)
+                              (prom:check-true restored-ok))))
+          (display "poison-restore: ")
+          (write pr)
+          (newline)
+          (display "poison-restore gates ok=")
+          (display pr-check)
+          (newline)
+
+          ; ── 4. Post metrology ──
+          (let* ((v-nodes (prom:check-true (prom:validate-nodes-pass?)))
+                 (v-own (prom:check-true (prom:validate-ownership-pass?)))
+                 (mut-total (prom:mutation-total))
+                 (mut-check (prom:check-ge mut-total ROUNDS))
+                 (esc-ok (prom:check-eq (prom:stats-ref "escapes") 0)))
+            (display "validate-nodes=")
+            (display v-nodes)
+            (display " own=")
+            (display v-own)
+            (display " mut-total=")
+            (display mut-total)
+            (display " escapes=")
+            (display (prom:stats-ref "escapes"))
+            (newline)
+
+            (display "stats: ")
+            (write (prom:stats-alist))
+            (newline)
+
+            (let ((all-ok
+                    (and init-ok cont-check pr-check
+                         v-nodes v-own mut-check esc-ok
+                         (= (prom:stats-ref "correctness_fail") 0)
+                         (>= (prom:stats-ref "mut_ok") ROUNDS)
+                         (= (prom:stats-ref "mut_fail") 0)
+                         (>= (prom:stats-ref "rollback_ok") 1)
+                         (= (prom:stats-ref "escapes") 0))))
+              (if all-ok
+                (begin
+                  (display "PASS: continuous typed mutate on large FlatAST (escapes=0)")
+                  (newline)
+                  (display "RESULT pass example=02-continuous-mutate escapes=0 rounds=")
+                  (display ROUNDS)
+                  (display " nodes=")
+                  (display nc1)
+                  (display " gen=")
+                  (display gen)
+                  (display " elapsed_ms=")
+                  (display elapsed)
+                  (newline))
+                (begin
+                  (display "FAIL: continuous mutate denseness probe")
+                  (newline)
+                  (display "RESULT fail example=02-continuous-mutate")
+                  (newline)
+                  (display "  init=")
+                  (display init-ok)
+                  (display " cont=")
+                  (display cont-check)
+                  (display " poison-restore=")
+                  (display pr-check)
+                  (display " mut_fail=")
+                  (display (prom:stats-ref "mut_fail"))
+                  (display " correctness_fail=")
+                  (display (prom:stats-ref "correctness_fail"))
+                  (newline))))))))))

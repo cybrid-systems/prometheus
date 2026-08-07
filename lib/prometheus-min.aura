@@ -1,0 +1,31 @@
+; lib/prometheus-min.aura — Phase 1–2 facade (Axes A + B + F)
+;
+; (require "prometheus-min" all:)
+;
+; Thin re-export of measure + scale + mutate for denseness probes.
+; Later phases add llm / escape modules here.
+
+(export prom:stats prom:stats-reset! prom:stats-ref prom:stats-bump!
+        prom:stats-set! prom:stats-alist prom:alist-ref
+        prom:time-call prom:ops-per-sec prom:ops-per-ms
+        prom:check-eq prom:check-true prom:check-ge
+        prom:scale-version prom:mutate-version prom:min-version
+        prom:build-leaves-src prom:build-deep-src prom:build-scale-src
+        prom:install-source
+        prom:node-count prom:def-count prom:generation
+        prom:validate-nodes-pass? prom:validate-ownership-pass?
+        prom:scale-snapshot
+        prom:observe-flatast! prom:install-and-observe
+        prom:safety-ok? prom:snapshot prom:restore
+        prom:rebind-safe prom:rebind-live
+        prom:build-subject-src prom:install-scale-subject
+        prom:body-scale prom:want-scale
+        prom:sample-subject prom:leaves-intact?
+        prom:continuous-rebind! prom:poison-restore!
+        prom:mutation-total)
+
+(require "prometheus-measure" all:)
+(require "prometheus-scale" all:)
+(require "prometheus-mutate" all:)
+
+(define prom:min-version 2)

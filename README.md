@@ -155,8 +155,8 @@ prometheus/
 
 | Phase | Focus | Status |
 |-------|--------|--------|
-| **1** | Minimal large-AST construction + baseline metrology | planned |
-| **2** | Continuous typed mutation + dirty cascade under controlled load | planned |
+| **1** | Minimal large-AST construction + baseline metrology | **landed** (`01-minimal-scale`) |
+| **2** | Continuous typed mutation + dirty cascade under controlled load | **landed** (`02-continuous-mutate`) |
 | **3** | Incremental cost observability + generation / cache behavior | planned |
 | **4** | LLM propose edge (schema / wire / stub / live) isolation | planned |
 | **5** | Scale soak + denseness judgment | planned |
@@ -178,12 +178,14 @@ Apache License 2.0 (same as Aura, Aether, Hephaestus)
 
 ## Status
 
-**Skeleton initialized.** Probes and denseness evidence to be constructed.
+**Phase 1–2 landed.** Large FlatAST construct + continuous typed rebind (poison/restore) pass with core \(E=0\). Incremental cost (C), LLM edge (D), and full denseness judgment remain open.
 
 ```bash
 ./scripts/check-structure.sh    # no binary required
-# later:
+./scripts/run-aura.sh examples/01-minimal-scale/main.aura
+./scripts/run-aura.sh examples/02-continuous-mutate/main.aura
 ./scripts/run-all.sh
+# later:
 ./scripts/overnight-scale.sh
 ```
 

@@ -73,9 +73,15 @@ Verify correctness + incremental envelope  →  Rollback (if needed)  →  next 
 
 ## Current phase goal
 
-**Skeleton.** First probes (01-minimal-scale, etc.) not yet written.
+**Phase 1–2 landed:**
+- `01-minimal-scale` — large FlatAST construct + metrology (A+F, \(E=0\))
+- `02-continuous-mutate` — continuous typed rebind + poison/restore on scale backdrop (A+B+F, \(E=0\))
+
+**Next:** Phase 3 incremental cost observability — dirty/cascade/generation/cache as decision-grade metrics (axis C).
 
 When generating code or probes, keep the denseness claim **testable** and the escape discipline **strict**.
+
+**Host residuals to respect:** H1 (no cross-define call chains after set-code), H3 (sample rebind results inside continuous while, not only top-level after).
 
 ### After generating
 
